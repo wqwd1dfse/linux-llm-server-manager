@@ -56,9 +56,13 @@ window.toast = function (message, type = 'info') {
   const container = document.getElementById('toast-container');
   if (!container) return;
 
+  const localizedMessage = window.localizeText
+    ? window.localizeText(String(message))
+    : String(message);
+
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
-  toast.innerText = message;
+  toast.innerText = localizedMessage;
 
   container.appendChild(toast);
 

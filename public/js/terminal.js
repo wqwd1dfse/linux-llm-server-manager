@@ -1,5 +1,7 @@
 // Web Terminal with xterm.js
 
+const terminalText = (zh, en) => window.localize ? window.localize(zh, en) : en;
+
 let term = null;
 let fitAddon = null;
 let termWs = null;
@@ -19,7 +21,7 @@ function loadTerminalStylesheet() {
     link.onload = resolve;
     link.onerror = () => {
       link.remove();
-      reject(new Error('终端样式加载失败'));
+      reject(new Error(terminalText('终端样式加载失败', 'Failed to load terminal styles')));
     };
     document.head.appendChild(link);
   });
@@ -35,7 +37,7 @@ function loadTerminalScript(id, src) {
     script.onload = resolve;
     script.onerror = () => {
       script.remove();
-      reject(new Error('终端组件加载失败'));
+      reject(new Error(terminalText('终端组件加载失败', 'Failed to load terminal component')));
     };
     document.head.appendChild(script);
   });
@@ -53,7 +55,7 @@ async function ensureTerminalAssets() {
         await loadTerminalScript('xterm-fit-script', XTERM_FIT_URL);
       }
       if (!window.Terminal || !window.FitAddon?.FitAddon) {
-        throw new Error('终端组件初始化失败');
+        throw new Error(terminalText('终端组件初始化失败', 'Failed to initialize terminal component'));
       }
     })();
   }
@@ -72,7 +74,7 @@ window.initTerminal = async function () {
   try {
     await ensureTerminalAssets();
   } catch (error) {
-    container.textContent = '终端组件加载失败。请检查网络连接或在本地托管 xterm.js 资源。';
+    container.textContent = terminalText('终端组件加载失败。请检查网络连接或在本地托管 xterm.js 资源。', 'The terminal component failed to load. Check the network connection or host the xterm.js assets locally.');
     container.setAttribute('role', 'alert');
     window.toast(error.message, 'error');
     return;
@@ -153,8 +155,8 @@ function connectTerminalWs(force = false) {
   }
 
   if (term) {
-    const targetHost = window.serverConnectionConfig?.host || '目标服务器';
-    term.write(`\r\n\x1b[36m[正在建立与 ${targetHost} 的 SSH 终端会话...]\x1b[0m\r\n`);
+    const targetHost = window.serverConnectionConfig?.host || terminalText('目标服务器', 'target server');
+    term.write(terminalText(`\r\n\x1b[36m[正在建立与 ${targetHost} 的 SSH 终端会话...]\x1b[0m\r\n`, `\r\n\x1b[36m[Opening an SSH terminal session to ${targetHost}...]\x1b[0m\r\n`));
   }
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -180,7 +182,7 @@ function connectTerminalWs(force = false) {
         } else if (msg.type === 'error' && term) {
           term.write(msg.message);
         } else if (msg.type === 'close' && term) {
-          term.write(msg.message || '\r\n[会话已断开]\r\n');
+          term.write(msg.message || terminalText('\r\n[会话已断开]\r\n', '\r\n[Session disconnected]\r\n'));
         }
       } catch (e) {
         if (term) term.write(event.data);
@@ -189,18 +191,18 @@ function connectTerminalWs(force = false) {
 
     termWs.onclose = () => {
       if (term) {
-        term.write('\r\n\x1b[33m[终端连接已关闭，可点击上方「重新连接」]\x1b[0m\r\n');
+        term.write(terminalText('\r\n\x1b[33m[终端连接已关闭，可点击上方「重新连接」]\x1b[0m\r\n', '\r\n\x1b[33m[Terminal connection closed; use Reconnect above]\x1b[0m\r\n'));
       }
     };
 
     termWs.onerror = (err) => {
       if (term) {
-        term.write('\r\n\x1b[31m[WebSocket 终端连接异常]\x1b[0m\r\n');
+        term.write(terminalText('\r\n\x1b[31m[WebSocket 终端连接异常]\x1b[0m\r\n', '\r\n\x1b[31m[WebSocket terminal connection error]\x1b[0m\r\n'));
       }
     };
   } catch (err) {
     if (term) {
-      term.write(`\r\n\x1b[31m[无法连接终端: ${err.message}]\x1b[0m\r\n`);
+      term.write(terminalText(`\r\n\x1b[31m[无法连接终端: ${err.message}]\x1b[0m\r\n`, `\r\n\x1b[31m[Unable to connect terminal: ${err.message}]\x1b[0m\r\n`));
     }
   }
 }

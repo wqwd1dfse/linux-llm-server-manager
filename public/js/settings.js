@@ -7,7 +7,7 @@ window.initSettings = function () {
 
 function loadPreferences() {
   // 1. Language
-  const savedLang = localStorage.getItem('win-lang') || 'zh-CN';
+  const savedLang = localStorage.getItem('win-lang') || 'en-US';
   const langSel = document.getElementById('setting-lang-select');
   if (langSel) langSel.value = savedLang;
 
@@ -35,10 +35,6 @@ function loadPreferences() {
 }
 
 function setupSettingsEvents() {
-  // Language Change
-  document.getElementById('setting-lang-select')?.addEventListener('change', (e) => {
-    if (window.setLanguage) window.setLanguage(e.target.value);
-  });
 
   // Theme Change
   document.getElementById('setting-theme-select')?.addEventListener('change', (e) => {
@@ -55,7 +51,7 @@ function setupSettingsEvents() {
 
   // Save All Preferences
   document.getElementById('btn-save-preferences')?.addEventListener('click', async () => {
-    const lang = document.getElementById('setting-lang-select')?.value || 'zh-CN';
+    const lang = document.getElementById('setting-lang-select')?.value || 'en-US';
     const theme = document.getElementById('setting-theme-select')?.value || 'dark';
     const interval = document.getElementById('setting-poll-interval')?.value || '2500';
     const tempAlarm = document.getElementById('setting-temp-alarm')?.value || '80';

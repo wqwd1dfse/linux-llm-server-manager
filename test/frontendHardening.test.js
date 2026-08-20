@@ -63,6 +63,26 @@ test('Frontend architecture: modular styles and trusted modal fragment bootstrap
   assert.doesNotMatch(llm, /function renderMarkdown/);
 });
 
+test('Internationalization: English defaults and language switching preserve nested controls', () => {
+  const i18n = read('public/js/i18n.js');
+  const catalog = read('public/js/i18nCatalog.js');
+  const settings = read('public/js/settings.js');
+  const englishReadme = read('README.md');
+  const chineseReadme = read('README.zh-CN.md');
+
+  assert.match(shellHtml, /<html lang="en"/);
+  assert.match(shellHtml, /<option value="en-US" selected>/);
+  assert.match(i18n, /const DEFAULT_LANGUAGE = 'en-US'/);
+  assert.match(settings, /localStorage\.getItem\('win-lang'\) \|\| 'en-US'/);
+  assert.doesNotMatch(settings, /getElementById\('setting-lang-select'\)\?\.addEventListener\('change'/);
+  assert.match(i18n, /setElementTextPreservingChildren/);
+  assert.match(i18n, /MutationObserver/);
+  assert.doesNotMatch(i18n, /innerText\s*=\s*trans/);
+  assert.match(catalog, /Linux Server Manager/);
+  assert.match(englishReadme, /\[简体中文\]\(README\.zh-CN\.md\)/);
+  assert.match(chineseReadme, /\[English\]\(README\.md\)/);
+});
+
 test('LLM Studio: launch presets, capacity estimate and restart parameter retention', () => {
   const llmClient = read('public/js/llm.js');
   const llmServer = read('server/routes/llm.js');

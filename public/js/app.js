@@ -35,6 +35,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 });
 
+
+window.addEventListener('languagechange', () => {
+  applyTheme(localStorage.getItem('win-theme') || 'dark');
+
+  if (window.currentView === 'files' && typeof window.currentPath !== 'undefined') {
+    renderAddressBarFiles(window.currentPath);
+  } else {
+    updateAddressBarForView(window.currentView);
+  }
+
+  renderServerProfiles(window.serverConnectionConfig?.activeProfileId || null);
+});
 // Lazy View Initializer
 function lazyInitView(view) {
   const initKey = view.startsWith('monitor-') ? 'dashboard' : view;
@@ -90,7 +102,7 @@ function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   localStorage.setItem('win-theme', theme);
 
-  const isEn = localStorage.getItem('win-lang') === 'en-US';
+  const isEn = window.getLanguage ? window.getLanguage() === 'en-US' : true;
   const icon = document.getElementById('theme-icon');
   const label = document.getElementById('theme-label');
 
@@ -215,7 +227,7 @@ function updateAddressBarForView(view) {
   const box = document.getElementById('address-bar-box');
   if (!box) return;
 
-  const isEn = localStorage.getItem('win-lang') === 'en-US';
+  const isEn = window.getLanguage ? window.getLanguage() === 'en-US' : true;
   const viewTitles = isEn ? {
     'files': 'Remote Filesystem (SFTP)',
     'terminal': 'Web Terminal (SSH)',
@@ -354,7 +366,7 @@ function setupAccessibility() {
 
 function getServerTargetLabel(includeUser = true) {
   const config = window.serverConnectionConfig;
-  if (!config?.host) return '目标服务器';
+  if (!config?.host) return window.localize ? window.localize('目标服务器', 'Target server') : 'Target server';
   const host = `${config.host}:${config.port || 22}`;
   return includeUser && config.username ? `${config.username}@${host}` : host;
 }
@@ -393,7 +405,9 @@ function renderServerProfiles(activeProfileId = null) {
     quickSwitch.replaceChildren();
     const placeholder = document.createElement('option');
     placeholder.value = '';
-    placeholder.textContent = serverProfiles.length ? '快速切换服务器...' : '暂无已保存服务器';
+    placeholder.textContent = serverProfiles.length
+      ? (window.localize ? window.localize('快速切换服务器...', 'Quickly switch servers...') : 'Quickly switch servers...')
+      : (window.localize ? window.localize('暂无已保存服务器', 'No saved servers') : 'No saved servers');
     quickSwitch.appendChild(placeholder);
   }
 
@@ -402,7 +416,9 @@ function renderServerProfiles(activeProfileId = null) {
     if (list) {
       const empty = document.createElement('div');
       empty.className = 'server-profile-empty';
-      empty.textContent = '还没有保存服务器档案。填写下方连接信息并勾选保存凭据即可创建。';
+      empty.textContent = window.localize
+        ? window.localize('还没有保存服务器档案。填写下方连接信息并勾选保存凭据即可创建。', 'No server profiles are saved yet. Complete the connection form and enable credential storage to create one.')
+        : 'No server profiles are saved yet. Complete the connection form and enable credential storage to create one.';
       list.appendChild(empty);
     }
     return;
@@ -426,7 +442,10 @@ function renderServerProfiles(activeProfileId = null) {
     const title = document.createElement('strong');
     title.textContent = profile.name;
     const target = document.createElement('span');
-    target.textContent = `${profile.username}@${profile.host}:${profile.port} · ${profile.authType === 'key' ? '私钥' : '密码'}`;
+    const authLabel = profile.authType === 'key'
+      ? (window.localize ? window.localize('私钥', 'Private key') : 'Private key')
+      : (window.localize ? window.localize('密码', 'Password') : 'Password');
+    target.textContent = `${profile.username}@${profile.host}:${profile.port} · ${authLabel}`;
     info.append(title, target);
 
     const actions = document.createElement('div');
@@ -749,15 +768,15 @@ async function checkAuthStatus() {
 
     if (config) {
       window.serverConnectionConfig = config;
-      document.title = `${config.host} · Linux 服务器管理控制台`;
+      document.title = `${config.host} · ${window.localize ? window.localize('Linux 服务器管理控制台', 'Linux Server Manager') : 'Linux Server Manager'}`;
       const hostEl = document.getElementById('titlebar-host');
       if (hostEl) hostEl.innerText = getServerTargetLabel(true);
       const statusHost = document.getElementById('statusbar-host');
-      if (statusHost) statusHost.innerText = `主机: ${getServerTargetLabel(true)}`;
+      if (statusHost) statusHost.innerText = `${window.localize ? window.localize('主机', 'Host') : 'Host'}: ${getServerTargetLabel(true)}`;
       const terminalLabel = document.getElementById('terminal-session-label');
-      if (terminalLabel) terminalLabel.innerText = `会话: ${getServerTargetLabel(true)} (pty)`;
+      if (terminalLabel) terminalLabel.innerText = `${window.localize ? window.localize('会话', 'Session') : 'Session'}: ${getServerTargetLabel(true)} (pty)`;
       const chatSubtitle = document.getElementById('chat-empty-subtitle');
-      if (chatSubtitle) chatSubtitle.innerText = `由 ${config.host} 上的本地推理服务驱动`;
+      if (chatSubtitle) chatSubtitle.innerText = window.localize ? window.localize(`由 ${config.host} 上的本地推理服务驱动`, `Powered by the local inference service on ${config.host}`) : `Powered by the local inference service on ${config.host}`;
 
       const setHost = document.getElementById('setting-host');
       if (setHost) setHost.value = config.host || '192.168.1.128';
@@ -798,10 +817,12 @@ window.updateConnectionStatus = function (isConnected, uptimeText) {
   }
 
   if (statusItem) {
-    statusItem.innerText = isConnected ? '● 已就绪 (在线)' : '○ 未连接 (离线)';
+    statusItem.innerText = isConnected
+      ? (window.localize ? window.localize('● 已就绪 (在线)', '● Ready (online)') : '● Ready (online)')
+      : (window.localize ? window.localize('○ 未连接 (离线)', '○ Disconnected (offline)') : '○ Disconnected (offline)');
     statusItem.style.color = isConnected ? '#89d185' : '#f14c4c';
   }
   if (uptimeItem && uptimeText) {
-    uptimeItem.innerText = `开机: ${uptimeText}`;
+    uptimeItem.innerText = `${window.localize ? window.localize('开机', 'Uptime') : 'Uptime'}: ${uptimeText}`;
   }
 };

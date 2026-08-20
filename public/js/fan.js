@@ -1,5 +1,7 @@
 // Fan & Multi-Component Thermal Control Console (Windows 11 Style)
 
+const fanText = (zh, en) => window.localize ? window.localize(zh, en) : en;
+
 let fanPollingInterval = null;
 let currentFanHistoryRange = '5m';
 let fanHistoryPoints = [];
@@ -39,7 +41,7 @@ async function loadFanStatus(showToast = false) {
     // Service status badge
     const sBadge = document.getElementById('fan-service-badge');
     if (sBadge && d.service) {
-      sBadge.innerText = d.service.isActive ? '● 自动温控运行中 (Active)' : '○ 手动转速接管 (Manual)';
+      sBadge.innerText = d.service.isActive ? fanText('● 自动温控运行中', '● Automatic thermal control active') : fanText('○ 手动转速接管', '○ Manual fan control');
       sBadge.style.color = d.service.isActive ? 'var(--perf-green)' : 'var(--perf-yellow)';
       if (d.service.isActive) {
         activePresetMode = 'auto';
@@ -49,23 +51,23 @@ async function loadFanStatus(showToast = false) {
 
     // Top Header Big Readout
     if (d.fans?.p12) {
-      const p12RpmText = d.fans.p12.rpm !== null ? `${(d.fans.p12.rpm).toLocaleString()} RPM` : 'N/A (传感器离线)';
+      const p12RpmText = d.fans.p12.rpm !== null ? `${(d.fans.p12.rpm).toLocaleString()} RPM` : fanText('N/A (传感器离线)', 'N/A (sensor offline)');
       setText('fan-p12-rpm', p12RpmText);
 
       const cpuTempStr = d.temperatures?.cpu?.package !== null ? `${d.temperatures.cpu.package}°C` : 'N/A';
       const cpuPwmStr = d.fans.cpu?.pwmPercent !== null ? `${d.fans.cpu.pwmPercent}%` : 'N/A';
-      setText('fan-cpu-status', `CPU 风扇: ${cpuPwmStr} PWM | 封装温度: ${cpuTempStr}`);
+      setText('fan-cpu-status', fanText(`CPU 风扇: ${cpuPwmStr} PWM | 封装温度: ${cpuTempStr}`, `CPU fan: ${cpuPwmStr} PWM | package: ${cpuTempStr}`));
 
       // Fan Matrix Readouts
       setText('fan-p12-pwm', d.fans.p12.pwmPercent !== null ? `${d.fans.p12.pwmPercent}% (${d.fans.p12.rawPwm}/255)` : 'N/A');
       setProgressBar('fan-p12-progress', d.fans.p12.pwmPercent !== null ? d.fans.p12.pwmPercent : 0);
 
       setText('fan-cpu-pwm', d.fans.cpu.pwmPercent !== null ? `${d.fans.cpu.pwmPercent}% (${d.fans.cpu.rawPwm}/255)` : 'N/A');
-      setText('fan-cpu-rpm', d.fans.cpu.rpm !== null && d.fans.cpu.rpm > 0 ? `${d.fans.cpu.rpm} RPM` : (d.fans.cpu.rpm === 0 ? '0 RPM' : 'PWM 智能调速'));
+      setText('fan-cpu-rpm', d.fans.cpu.rpm !== null && d.fans.cpu.rpm > 0 ? `${d.fans.cpu.rpm} RPM` : (d.fans.cpu.rpm === 0 ? '0 RPM' : fanText('PWM 智能调速', 'Smart PWM control')));
       setProgressBar('fan-cpu-progress', d.fans.cpu.pwmPercent !== null ? d.fans.cpu.pwmPercent : 0);
 
       setText('fan-gpu-pwm', d.fans.gpu.pwmPercent !== null ? `${d.fans.gpu.pwmPercent}% (${d.fans.gpu.rawPwm}/255)` : 'N/A');
-      setText('fan-gpu-rpm', d.fans.gpu.rpm !== null && d.fans.gpu.rpm > 0 ? `${d.fans.gpu.rpm} RPM` : '板载风机');
+      setText('fan-gpu-rpm', d.fans.gpu.rpm !== null && d.fans.gpu.rpm > 0 ? `${d.fans.gpu.rpm} RPM` : fanText('板载风机', 'Onboard fan'));
       setProgressBar('fan-gpu-progress', d.fans.gpu.pwmPercent !== null ? d.fans.gpu.pwmPercent : 0);
 
       setText('fan-aux-pwm', d.fans.aux.pwmPercent !== null ? `${d.fans.aux.pwmPercent}% (${d.fans.aux.rawPwm}/255)` : 'N/A');
@@ -433,15 +435,15 @@ function drawFanHistoryCanvas() {
   ctx.fillStyle = 'rgba(239, 68, 68, 0.6)';
   ctx.textAlign = 'left';
   ctx.font = '9px system-ui, sans-serif';
-  ctx.fillText('⚠️ 80°C 警戒线', padLeft + 6, y80 - 4);
+  ctx.fillText(fanText('⚠️ 80°C 警戒线', '⚠️ 80°C alert threshold'), padLeft + 6, y80 - 4);
 
   // Time labels
   ctx.fillStyle = textColor;
   ctx.font = '10px Consolas, monospace';
   ctx.textAlign = 'center';
-  const timeLabels = currentFanHistoryRange === '5m' ? ['-5m', '-4m', '-3m', '-2m', '-1m', '现在']
-    : currentFanHistoryRange === '30m' ? ['-30m', '-24m', '-18m', '-12m', '-6m', '现在']
-    : ['-60m', '-48m', '-36m', '-24m', '-12m', '现在'];
+  const timeLabels = currentFanHistoryRange === '5m' ? ['-5m', '-4m', '-3m', '-2m', '-1m', fanText('现在', 'Now')]
+    : currentFanHistoryRange === '30m' ? ['-30m', '-24m', '-18m', '-12m', '-6m', fanText('现在', 'Now')]
+    : ['-60m', '-48m', '-36m', '-24m', '-12m', fanText('现在', 'Now')];
 
   timeLabels.forEach((lbl, idx) => {
     const x = padLeft + (plotW * idx) / (timeLabels.length - 1);
@@ -452,7 +454,7 @@ function drawFanHistoryCanvas() {
     ctx.fillStyle = textColor;
     ctx.textAlign = 'center';
     ctx.font = '12px system-ui, sans-serif';
-    ctx.fillText('等待采样数据汇入...', padLeft + plotW / 2, padTop + plotH / 2);
+    ctx.fillText(fanText('等待采样数据汇入...', 'Waiting for telemetry samples...'), padLeft + plotW / 2, padTop + plotH / 2);
     return;
   }
 
@@ -533,10 +535,10 @@ function handleChartMouseMove(e) {
       <span>🕒 ${window.escapeHtml(timeStr)}</span>
     </div>
     <div style="display: flex; flex-direction: column; gap: 2px; font-size: 11px;">
-      <div style="color: #f97316; display: flex; justify-content: space-between;"><span>🟠 GPU 结温:</span> <strong>${p.gpuJ !== null ? `${p.gpuJ} °C` : 'N/A'}</strong></div>
-      <div style="color: #ef4444; display: flex; justify-content: space-between;"><span>🔴 CPU 封装:</span> <strong>${p.cpu !== null ? `${p.cpu} °C` : 'N/A'}</strong></div>
-      <div style="color: #eab308; display: flex; justify-content: space-between;"><span>🟡 GPU 核心:</span> <strong>${p.gpuE !== null ? `${p.gpuE} °C` : 'N/A'}</strong></div>
-      <div style="color: #3b82f6; display: flex; justify-content: space-between;"><span>⚡ GPU 功耗:</span> <strong>${p.gpuP !== null ? `${p.gpuP} W` : 'N/A'}</strong></div>
+      <div style="color: #f97316; display: flex; justify-content: space-between;"><span>${fanText('🟠 GPU 结温:', '🟠 GPU junction:')}</span> <strong>${p.gpuJ !== null ? `${p.gpuJ} °C` : 'N/A'}</strong></div>
+      <div style="color: #ef4444; display: flex; justify-content: space-between;"><span>${fanText('🔴 CPU 封装:', '🔴 CPU package:')}</span> <strong>${p.cpu !== null ? `${p.cpu} °C` : 'N/A'}</strong></div>
+      <div style="color: #eab308; display: flex; justify-content: space-between;"><span>${fanText('🟡 GPU 核心:', '🟡 GPU edge:')}</span> <strong>${p.gpuE !== null ? `${p.gpuE} °C` : 'N/A'}</strong></div>
+      <div style="color: #3b82f6; display: flex; justify-content: space-between;"><span>${fanText('⚡ GPU 功耗:', '⚡ GPU power:')}</span> <strong>${p.gpuP !== null ? `${p.gpuP} W` : 'N/A'}</strong></div>
     </div>
   `;
 

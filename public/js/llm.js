@@ -1112,7 +1112,11 @@ window.sendBenchmarkPrompt = function (type) {
   const input = document.getElementById('chat-user-input');
   if (!input) return;
 
-  const prompts = {
+  const prompts = window.isEnglish?.() ? {
+    code: 'Write a high-performance asynchronous web crawler in Python with concurrent connection pooling and resumable retries. Demonstrate a robust asyncio and aiohttp architecture.',
+    reasoning: 'Two trains travel toward each other at 100 km/h and 80 km/h from 360 km apart. A falcon flies back and forth between them at 150 km/h until they meet. Derive the total flight distance and time, and explain the mathematics.',
+    speed: 'Provide a detailed overview of open-source large language model development from 2024 to 2026. Compare dense and mixture-of-experts models, and discuss FlashAttention, MLA, KV-cache quantization, and AMD ROCm acceleration.'
+  } : {
     code: '请用 Python 编写一个高性能、支持并发连接池与断点重试的异步网络爬虫，并详细演示 asyncio 与 aiohttp 的最佳架构实践。',
     reasoning: '一列火车以 100 km/h 速度向前行驶，另一列迎面驶来的火车以 80 km/h 行驶，两车相距 360 km。一只猎鹰以 150 km/h 的速度在两车车头之间来回折返飞行直到两车相遇。请详细推导并计算猎鹰飞行的总路程与总时间，并分析其物理数学原理。',
     speed: '请全面综述现代开源大型语言模型（LLM）在 2024~2026 年的技术演进路线，重点对比密集模型（Dense）与混合专家模型（MoE，如 DeepSeek-V3 / GPT-OSS），并从注意力机制优化（FlashAttention、MLA）、KV Cache 压缩量化以及在 AMD ROCm 生态下的算子加速策略展开深入论述。'

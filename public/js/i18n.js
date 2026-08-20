@@ -1,5 +1,7 @@
 // Comprehensive Internationalization (i18n) Engine (Chinese / English)
 
+import { staticPhrasePairs } from './i18nCatalog.js';
+
 const translations = {
   'zh-CN': {
     // Navigation
@@ -290,70 +292,250 @@ const phrasePairs = [
   ['浅色模式 (Light Theme - Fluent Light)', 'Light Theme (Fluent Light)']
 ];
 
-let currentLang = localStorage.getItem('win-lang') || 'zh-CN';
+const DEFAULT_LANGUAGE = 'en-US';
+const SUPPORTED_LANGUAGES = new Set(['en-US', 'zh-CN']);
+const allPhrasePairs = [...phrasePairs, ...staticPhrasePairs];
+const enByZh = new Map(allPhrasePairs);
+const zhByEn = new Map(allPhrasePairs.map(([zh, en]) => [en, zh]));
+const templatePhrasePairs = allPhrasePairs.filter(([zh]) => zh.length >= 4 || /[:：]$/.test(zh));
+const replacePairs = {
+  'en-US': [...templatePhrasePairs].sort((a, b) => b[0].length - a[0].length),
+  'zh-CN': templatePhrasePairs.map(([zh, en]) => [en, zh]).sort((a, b) => b[0].length - a[0].length)
+};
 
-export function t(key) {
-  const dict = translations[currentLang] || translations['zh-CN'];
-  return dict[key] || key;
+let currentLang = normalizeLanguage(localStorage.getItem('win-lang'));
+let initialized = false;
+let translating = false;
+let observer = null;
+
+function normalizeLanguage(lang) {
+  return SUPPORTED_LANGUAGES.has(lang) ? lang : DEFAULT_LANGUAGE;
 }
 
-export function setLanguage(lang) {
-  if (lang !== 'zh-CN' && lang !== 'en-US') return;
-  currentLang = lang;
-  localStorage.setItem('win-lang', lang);
+export function getLanguage() {
+  return currentLang;
+}
+
+export function isEnglish() {
+  return currentLang === 'en-US';
+}
+
+export function t(key) {
+  const dict = translations[currentLang] || translations[DEFAULT_LANGUAGE];
+  return dict[key] || translations[DEFAULT_LANGUAGE][key] || translations['zh-CN'][key] || key;
+}
+
+export function localize(zhText, enText) {
+  return currentLang === 'zh-CN' ? zhText : enText;
+}
+
+export function localizeText(value, lang = currentLang) {
+  if (value === null || value === undefined) return '';
+  let result = String(value);
+  for (const [fromText, toText] of replacePairs[normalizeLanguage(lang)]) {
+    if (fromText && result.includes(fromText)) {
+      result = result.split(fromText).join(toText);
+    }
+  }
+  return result;
+}
+
+function translateExact(value) {
+  const raw = String(value ?? '');
+  const trimmed = raw.trim();
+  if (!trimmed) return raw;
+
+  const translated = currentLang === 'en-US' ? enByZh.get(trimmed) : zhByEn.get(trimmed);
+  if (!translated || translated === trimmed) return raw;
+
+  const start = raw.indexOf(trimmed);
+  return raw.slice(0, start) + translated + raw.slice(start + trimmed.length);
+}
+
+function translateNodeValue(node) {
+  const exact = translateExact(node.textContent);
+  if (exact !== node.textContent) return exact;
+
+  const parent = node.parentElement;
+  const dynamicUi = parent && (
+    parent.matches('button, option, [role="status"]') ||
+    /^(status|fan-|llm-|docker-|server-|titlebar-|address-)/.test(parent.id || '')
+  );
+  return dynamicUi ? localizeText(node.textContent) : node.textContent;
+}
+
+function setElementTextPreservingChildren(element, value) {
+  const directTextNodes = [...element.childNodes].filter(
+    (node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim()
+  );
+
+  if (directTextNodes.length) {
+    directTextNodes[0].textContent = translateExact(value);
+    for (const extraNode of directTextNodes.slice(1)) extraNode.textContent = '';
+    return;
+  }
+
+  if (!element.children.length) {
+    element.textContent = value;
+    return;
+  }
+
+  element.insertBefore(document.createTextNode(value + ' '), element.firstChild);
+}
+
+function collectElements(root, selector) {
+  const elements = [];
+  if (root instanceof Element && root.matches(selector)) elements.push(root);
+  if (root.querySelectorAll) elements.push(...root.querySelectorAll(selector));
+  return elements;
+}
+
+function shouldSkipTextNode(node) {
+  const parent = node.parentElement;
+  return !parent || Boolean(parent.closest(
+    'script, style, code, pre, textarea, [contenteditable=\"true\"], [data-i18n-skip], .win-code-editor, .markdown-body, .xterm'
+  ));
+}
+
+function applyCatalogTranslations(root) {
+  const walkerRoot = root.nodeType === Node.TEXT_NODE ? root.parentElement : root;
+  if (!walkerRoot) return;
+
+  const walker = document.createTreeWalker(walkerRoot, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+
+  for (const node of textNodes) {
+    if (shouldSkipTextNode(node) || node.parentElement?.closest('[data-i18n]')) continue;
+    const translated = translateNodeValue(node);
+    if (translated !== node.textContent) node.textContent = translated;
+  }
+
+  for (const element of collectElements(walkerRoot, '[placeholder], [title], [aria-label]')) {
+    for (const attribute of ['placeholder', 'title', 'aria-label']) {
+      if (!element.hasAttribute(attribute)) continue;
+      const current = element.getAttribute(attribute);
+      const translated = translateExact(current);
+      if (translated !== current) element.setAttribute(attribute, translated);
+    }
+  }
+}
+
+export function applyTranslations(root = document) {
+  if (translating) return;
+  translating = true;
+
+  try {
+    document.documentElement.lang = currentLang === 'en-US' ? 'en' : 'zh-CN';
+    document.title = localize('Linux 服务器管理控制台', 'Linux Server Manager');
+
+    const description = document.querySelector('meta[name=\"description\"]');
+    if (description) {
+      description.content = localize(
+        '轻量、安全的 Linux 与本地大模型服务器管理控制台',
+        'A lightweight and secure dashboard for Linux servers and local LLM systems'
+      );
+    }
+
+    for (const element of collectElements(root, '[data-i18n]')) {
+      const translated = t(element.getAttribute('data-i18n'));
+      if (translated) setElementTextPreservingChildren(element, translated);
+    }
+
+    for (const element of collectElements(root, '[data-i18n-ph]')) {
+      const translated = t(element.getAttribute('data-i18n-ph'));
+      if (translated) element.setAttribute('placeholder', translated);
+    }
+
+    applyCatalogTranslations(root);
+
+    const langSelect = document.getElementById('setting-lang-select');
+    if (langSelect) langSelect.value = currentLang;
+  } finally {
+    translating = false;
+  }
+}
+
+function startObserver() {
+  if (observer || !document.body) return;
+
+  observer = new MutationObserver((mutations) => {
+    if (translating) return;
+    for (const mutation of mutations) {
+      if (mutation.type === 'characterData') {
+        const node = mutation.target;
+        if (!shouldSkipTextNode(node) && !node.parentElement?.closest('[data-i18n]')) {
+          const translated = translateNodeValue(node);
+          if (translated !== node.textContent) node.textContent = translated;
+        }
+        continue;
+      }
+
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) {
+          applyTranslations(node.nodeType === Node.TEXT_NODE ? node.parentElement : node);
+        }
+      }
+    }
+  });
+
+  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+}
+
+function wrapNativeDialogs() {
+  if (window.__i18nDialogsWrapped) return;
+  window.__i18nDialogsWrapped = true;
+
+  const nativeConfirm = window.confirm.bind(window);
+  const nativePrompt = window.prompt.bind(window);
+  window.confirm = (message) => nativeConfirm(localizeText(message));
+  window.prompt = (message, defaultValue) => defaultValue === undefined
+    ? nativePrompt(localizeText(message))
+    : nativePrompt(localizeText(message), defaultValue);
+}
+
+export function setLanguage(lang, options = {}) {
+  const normalized = normalizeLanguage(lang);
+  if (lang !== normalized) return false;
+
+  const previousLanguage = currentLang;
+  currentLang = normalized;
+  localStorage.setItem('win-lang', normalized);
   applyTranslations();
 
-  const langSelect = document.getElementById('setting-lang-select');
-  if (langSelect) langSelect.value = lang;
+  window.dispatchEvent(new CustomEvent('languagechange', {
+    detail: { language: currentLang, previousLanguage }
+  }));
 
-  window.toast(lang === 'zh-CN' ? '已切换至 简体中文' : 'Switched to English (US)', 'success');
+  if (options.announce !== false && previousLanguage !== currentLang && window.toast) {
+    window.toast(localize('已切换至简体中文', 'Switched to English (US)'), 'success');
+  }
+  return true;
 }
 
 export function initI18n() {
   applyTranslations();
+  if (initialized) return;
 
+  initialized = true;
   const langSelect = document.getElementById('setting-lang-select');
-  if (langSelect) {
-    langSelect.value = currentLang;
-    langSelect.addEventListener('change', (e) => {
-      setLanguage(e.target.value);
-    });
-  }
-}
+  langSelect?.addEventListener('change', (event) => setLanguage(event.target.value));
 
-export function applyTranslations() {
-  const isEn = currentLang === 'en-US';
-  document.documentElement.setAttribute('lang', isEn ? 'en' : 'zh');
-
-  // 1. Explicit data-i18n attributes
-  document.querySelectorAll('[data-i18n]').forEach(el => {
-    const key = el.getAttribute('data-i18n');
-    const trans = t(key);
-    if (trans) el.innerText = trans;
-  });
-
-  // 2. Explicit data-i18n-ph placeholders
-  document.querySelectorAll('[data-i18n-ph]').forEach(el => {
-    const key = el.getAttribute('data-i18n-ph');
-    const trans = t(key);
-    if (trans) el.setAttribute('placeholder', trans);
-  });
-
-  // 3. Fallback phrase dictionary scanning
-  phrasePairs.forEach(([zh, en]) => {
-    const fromText = isEn ? zh : en;
-    const toText = isEn ? en : zh;
-
-    // Buttons, spans, headings, labels
-    document.querySelectorAll('button, span, h2, h3, h4, label, option, .perf-card-title').forEach(el => {
-      if (el.children.length === 0 && el.innerText.trim() === fromText) {
-        el.innerText = toText;
-      }
-    });
-  });
+  wrapNativeDialogs();
+  startObserver();
 }
 
 window.t = t;
+window.localize = localize;
+window.localizeText = localizeText;
+window.getLanguage = getLanguage;
+window.isEnglish = isEnglish;
 window.setLanguage = setLanguage;
 window.initI18n = initI18n;
 window.applyTranslations = applyTranslations;
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initI18n, { once: true });
+} else {
+  initI18n();
+}
