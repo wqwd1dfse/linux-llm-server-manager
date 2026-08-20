@@ -1,16 +1,31 @@
-# Linux / 本地大模型服务器管理后台 (Server Manager Dashboard)
+# Linux LLM Server Manager
 
-专为 Linux 服务器与本地大模型（LLM）推理工作站打造的高性能、轻量化、现代 Windows 11 风格的运维管理控制台。
+[![CI](https://github.com/wqwd1dfse/linux-llm-server-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/wqwd1dfse/linux-llm-server-manager/actions/workflows/ci.yml)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+一套面向 Linux 服务器与本地大模型（LLM）推理工作站的轻量级 Web 管理控制台，采用现代 Windows 11 风格界面。
 
 包含 Linux 系统监控、SSH/WebSocket 终端、SFTP 文件管理、Docker 管理、Systemd 进程控制、风扇/PWM 散热控制、GPU 硬件监控、Hugging Face 模型下载与本地 LLM 推理控制台。
 
+## 目录
+
+- [核心特性](#-核心特性)
+- [快速开始](#-快速开始)
+- [安全说明](#️-安全说明)
+- [前端结构](#-前端结构)
+- [自动化测试](#-自动化测试)
+- [生产部署](#-生产环境反向代理部署)
+- [许可证](#-开源许可证)
+
 ---
 
-## ⚠️ 重要安全声明 (Security Notice)
+## ⚠️ 安全说明
 
 > [!IMPORTANT]
-> **凭据轮换提醒**: 如果在历史开发或测试环境中曾经使用过真实 SSH 密码或密钥，请务必**立即在目标 Linux 服务器上轮换 SSH 凭据**！
-> 若该项目曾经在 Git 历史中提交过敏感配置文件，建议在公开发布前使用 `git filter-repo` / BFG 清理历史提交记录，或重新初始化一个干净的 Git 仓库后再发布到 GitHub。
+> 这是拥有 SSH、Docker、systemd 和硬件控制能力的高权限管理工具。请优先绑定到 `127.0.0.1`，并通过可信 VPN 或启用 HTTPS 的反向代理访问。不要把管理端口直接暴露到公网。
+>
+> 如果历史开发或测试环境曾使用真实 SSH 密码、私钥或访问令牌，请在部署前轮换相关凭据，并确认它们没有进入 Git 历史。
 
 ---
 
@@ -24,8 +39,8 @@
 - 🐳 **Docker 容器与镜像看板 (Docker Manager)**: 严格参数与标识符校验，纯 DOM 事件绑定，容器状态与实时资源消耗、启停/重启/删除、日志查看、镜像拉取。
 - ⚙️ **Systemd 服务与进程管控 (Services & Processes)**: 进程资源排行与 PID 终止、系统服务状态检索与启停重载。
 - 🖥️ **多服务器档案与快速切换**: 保存多个 SSH 主机档案，在标题栏一键切换目标服务器；切换后文件、监控、Docker、进程、风扇和 LLM 状态同步刷新。凭据仅存放在本机受忽略的 `data/servers.json`。
-- 🛡️ **生产级安全边界 (Security Hardening)**:
 - ♿ **自适应与无障碍界面**: 支持桌面、平板与窄屏导航，提供跳转链接、完整焦点态、弹窗焦点锁定、键盘文件操作及减少动画偏好。
+- 🛡️ **生产级安全边界 (Security Hardening)**:
   - 默认安全本地监听 `127.0.0.1:3888`。
   - PBKDF2-HMAC-SHA512（220,000 次迭代）加盐哈希密码认证，首次密码至少 12 位，持久化原子存储于 `data/auth.json` (0600 权限)。
   - 用户名 + 密码双重严格校验，防暴力破解频率限制（5 次失败锁定 5 分钟）。
@@ -41,23 +56,29 @@
 ## 🚀 快速开始
 
 ### 1. 环境要求
-- Node.js >= 18.0.0 (推荐 Node.js 20 LTS 或 22)
+
+- Node.js >= 18.0.0（推荐 Node.js 20 LTS 或 22）
 - npm >= 9.0.0
+- 一台可通过 SSH 访问的 Linux 服务器
 
 ### 2. 克隆项目与安装依赖
+
 ```bash
 git clone https://github.com/wqwd1dfse/linux-llm-server-manager.git
-cd server-manager-dashboard
+cd linux-llm-server-manager
 npm ci
 ```
 
 ### 3. 环境配置 (可选)
+
 复制配置模板文件：
+
 ```bash
 cp .env.example .env
 ```
 
 按需编辑 `.env`：
+
 ```ini
 # 服务端监听端口与绑定地址 (默认 127.0.0.1 确保本地安全)
 PORT=3888
@@ -67,19 +88,19 @@ HOST=127.0.0.1
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=your_secure_password_here
 
-# 敏感安全密钥 (若不提供，服务启动时将随机生成 32 字节密钥)
-SESSION_SECRET=your_random_session_secret_32_bytes_hex
+# 生产环境请使用稳定、随机且足够长的值
+SESSION_SECRET=change_this_to_a_random_long_string_in_production
 
 # 反向代理信任设置 (默认 false，若位于 Nginx/Caddy 后可设为 loopback 或 1)
 TRUST_PROXY=false
 
-# 运维脚本安全限制 (默认禁止任意自定义 Shell 脚本执行)
 # 启动时是否自动连接已保存的 SSH 配置；维护或隔离测试时可设为 false
 AUTO_CONNECT=true
 
 # 首次初始化默认仅允许本机访问
 ALLOW_REMOTE_SETUP=false
 
+# 运维脚本安全限制（默认禁止任意自定义 Shell 脚本执行）
 ENABLE_CUSTOM_SCRIPTS=false
 
 # 本地大模型扫描根目录
@@ -94,6 +115,7 @@ MAX_UPLOAD_FILES=10
 ```
 
 ### 4. 启动服务
+
 ```bash
 # 生产启动
 npm start
@@ -103,13 +125,18 @@ npm run dev
 ```
 
 ### 5. 访问系统
+
 在浏览器打开：
+
 ```
 http://127.0.0.1:3888
 ```
 首次进入系统将提示设置管理员账号与初始密码。
 
+> Windows 用户可以把上面的 `cp` 替换为 `Copy-Item .env.example .env`。
+
 ---
+
 ## 🧩 前端结构
 
 - `public/index.html`：应用外壳与主要业务视图。
@@ -126,8 +153,7 @@ http://127.0.0.1:3888
 
 ---
 
-
-## 🧪 自动化集成测试
+## 🧪 自动化测试
 
 项目自带完整的自动化单元测试与安全校验套件（基于 Node.js 原生 Test Runner，零额外测试依赖）：
 
@@ -136,6 +162,7 @@ npm test
 ```
 
 测试覆盖：
+
 - 密码加盐哈希（PBKDF2 220,000 次迭代）与持久化重启恢复验证
 - 用户名与密码双重真实匹配校验
 - 统一 API 认证中间件与公开端点白名单过滤
@@ -191,4 +218,4 @@ npm test
 
 ## 📄 开源许可证
 
-本项目基于 [MIT License](LICENSE) 开源发布。
+本项目由 **wqwd1dfse** 维护，并基于 [MIT License](LICENSE) 开源发布。
