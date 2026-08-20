@@ -1,0 +1,1187 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="轻量、安全的 Linux 与本地大模型服务器管理控制台">
+  <meta name="color-scheme" content="dark light">
+  <title>Linux 服务器管理控制台</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div id="window-app">
+    <!-- Window Title Bar -->
+    <div class="window-titlebar">
+      <div class="titlebar-left">
+        <span class="app-mark" aria-hidden="true">M</span>
+        <span class="app-title">Linux 服务器管理控制台</span>
+        <span class="titlebar-host-badge" id="titlebar-host">目标服务器</span>
+        <select id="server-quick-switch" class="server-quick-switch" aria-label="快速切换服务器" title="快速切换服务器">
+          <option value="">选择服务器...</option>
+        </select>
+      </div>
+      <div class="window-controls">
+        <button class="theme-toggle-btn" id="btn-theme-toggle" title="切换浅色/深色主题">
+          <span id="theme-icon">☀️</span>
+          <span id="theme-label">浅色模式</span>
+        </button>
+        <button class="theme-toggle-btn" id="btn-logout" title="退出登录" style="margin-left: 6px;">
+          <span>🚪</span>
+          <span>退出</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Windows 11 Command Bar -->
+    <div class="command-bar" aria-label="快捷操作">
+      <button class="cmd-btn" id="cmd-btn-new-folder" data-i18n="cmd.new_folder">📁 新建文件夹</button>
+      <button class="cmd-btn" id="cmd-btn-new-file" data-i18n="cmd.new_file">📄 新建文件</button>
+      <button class="cmd-btn" id="cmd-btn-upload" data-i18n="cmd.upload">⬆ 上传文件</button>
+      <input type="file" id="file-upload-input" style="display: none;">
+      <button class="cmd-btn" id="cmd-btn-refresh" data-i18n="cmd.refresh">🔄 刷新 (F5)</button>
+      <div class="cmd-sep"></div>
+      <button class="cmd-btn" id="cmd-btn-terminal" data-i18n="cmd.terminal">⚡ 命令行终端</button>
+      <button class="cmd-btn primary" id="cmd-btn-settings" data-i18n="cmd.settings">🔑 连接配置</button>
+    </div>
+
+    <!-- Address Bar Row -->
+    <div class="address-row" aria-label="当前位置和搜索">
+      <div class="nav-history-group">
+        <button class="nav-arrow-btn" id="nav-btn-back" title="后退">◀</button>
+        <button class="nav-arrow-btn" id="nav-btn-forward" title="前进">▶</button>
+        <button class="nav-arrow-btn" id="nav-btn-up" title="向上">⬆</button>
+      </div>
+      <div class="address-box" id="address-bar-box">
+        <span data-i18n="header.server_host">🖥️ 此服务器</span>
+        <span>&gt;</span>
+        <span id="address-bar-crumb" class="address-crumb-item">远程文件系统</span>
+      </div>
+      <div class="search-box">
+        <input type="text" id="global-search-input" data-i18n-ph="cmd.search_ph" placeholder="在当前页面搜索...">
+      </div>
+    </div>
+
+    <!-- Disconnected Alert InfoBar -->
+    <div class="notice-banner" id="notice-disconnected" role="status" aria-live="polite">
+      <span>⚠️ <strong>尚未连接到目标主机</strong>：请点击右侧按钮输入 SSH 登录密码或私钥以开始实时监控与管理。</span>
+      <button class="cmd-btn primary" id="btn-quick-login" style="padding: 2px 10px; font-size: 11px;">立即配置连接</button>
+    </div>
+
+    <!-- Main Body Split (Left Tree + Right Views) -->
+    <div class="explorer-split">
+      <!-- Left Tree Sidebar -->
+      <aside class="nav-pane" aria-label="功能导航">
+        <!-- Quick Access -->
+        <div class="nav-group-title">快速访问 / Navigation</div>
+        <div class="nav-node active" data-view="files">
+          <span class="nav-icon">📁</span>
+          <span data-i18n="nav.files">远程文件系统 (SFTP)</span>
+        </div>
+        <div class="nav-node" data-view="terminal">
+          <span class="nav-icon">💻</span>
+          <span data-i18n="nav.terminal">Web 终端 (SSH)</span>
+        </div>
+        <div class="nav-node" data-view="llm">
+          <span class="nav-icon">🤖</span>
+          <span data-i18n="nav.llm">大模型控制台 (LLM Studio)</span>
+        </div>
+        <div class="nav-node" data-view="fan">
+          <span class="nav-icon">🌪️</span>
+          <span data-i18n="nav.fan">风扇与散热控制台 (Fan Control)</span>
+        </div>
+        <div class="nav-node" data-view="docker">
+          <span class="nav-icon">🐳</span>
+          <span data-i18n="nav.docker">Docker 容器与镜像</span>
+        </div>
+        <div class="nav-node" data-view="services">
+          <span class="nav-icon">⚙️</span>
+          <span data-i18n="nav.services">进程与系统服务</span>
+        </div>
+        <div class="nav-node" data-view="scripts">
+          <span class="nav-icon">🚀</span>
+          <span data-i18n="nav.scripts">常用运维工具箱</span>
+        </div>
+
+        <!-- Dedicated Hardware Monitoring Group -->
+        <div class="nav-group-title" style="margin-top: 10px;">📊 性能与硬件监控</div>
+        <div class="nav-node nav-sub-node" data-view="monitor-cpu">
+          <span class="nav-icon">🔲</span>
+          <span data-i18n="nav.mon_cpu">CPU 处理器监控</span>
+        </div>
+        <div class="nav-node nav-sub-node" data-view="monitor-gpu">
+          <span class="nav-icon">🎮</span>
+          <span data-i18n="nav.mon_gpu">GPU 显卡多卡监控</span>
+        </div>
+        <div class="nav-node nav-sub-node" data-view="monitor-ram">
+          <span class="nav-icon">💾</span>
+          <span data-i18n="nav.mon_ram">内存 (RAM) 监控</span>
+        </div>
+        <div class="nav-node nav-sub-node" data-view="monitor-ssd">
+          <span class="nav-icon">💽</span>
+          <span data-i18n="nav.mon_ssd">磁盘 / SSD 存储</span>
+        </div>
+
+        <!-- Settings Group -->
+        <div class="nav-group-title" style="margin-top: 10px;">⚙️ 配置管理</div>
+        <div class="nav-node nav-sub-node" data-view="settings">
+          <span class="nav-icon">🛠️</span>
+          <span data-i18n="nav.settings">系统与偏好设置</span>
+        </div>
+      </aside>
+
+      <!-- Right Main Content -->
+      <main class="content-pane" id="main-content" tabindex="-1">
+
+        <!-- 1. SFTP FILES VIEW -->
+        <div class="view-panel active" id="view-files" style="position: relative;">
+          <!-- Dropzone Overlay -->
+          <div class="dropzone-overlay" id="dropzone-overlay">
+            <span>📥 拖放文件至此，直接上传到当前目录</span>
+          </div>
+
+          <!-- Quick Paths Bookmarks Bar -->
+          <div class="quick-path-row">
+            <span class="quick-path-label">快捷目录:</span>
+            <span class="quick-path-chip" data-path="/root">/root</span>
+            <span class="quick-path-chip" data-path="/etc">/etc</span>
+            <span class="quick-path-chip" data-path="/var/log">/var/log</span>
+            <span class="quick-path-chip" data-path="/mnt/models">/mnt/models</span>
+            <span class="quick-path-chip" data-path="/home">/home</span>
+            <span class="quick-path-chip" data-path="/tmp">/tmp</span>
+            <span class="quick-path-chip" data-path="/">/ (根目录)</span>
+            <span class="quick-path-divider" aria-hidden="true"></span>
+            <button class="cmd-btn btn-sm" id="btn-toggle-file-favorite" title="收藏当前目录">☆ 收藏当前目录</button>
+            <span id="file-favorites-container" class="file-favorites-container"></span>
+
+            <div style="flex: 1;"></div>
+            <button class="cmd-btn btn-sm" id="btn-open-trash">🗑️ 回收站</button>
+
+            <!-- Paste & Batch Action Group -->
+            <button class="cmd-btn btn-sm" id="cmd-btn-paste" style="display: none; color: var(--win-accent); font-weight: 600;" data-action="paste-clipboard">📋 粘贴</button>
+            <div id="batch-actions-group" style="display: none; align-items: center; gap: 4px;">
+              <span id="selected-items-badge" style="font-size: 11px; color: var(--win-accent); font-weight: 600; margin-right: 4px;"></span>
+              <button class="cmd-btn btn-sm" data-action="copy-selection" data-cut="false">复制</button>
+              <button class="cmd-btn btn-sm" data-action="copy-selection" data-cut="true">剪切</button>
+              <button class="cmd-btn btn-sm" data-action="batch-compress">压缩</button>
+              <button class="cmd-btn btn-sm danger" data-action="batch-delete">删除</button>
+            </div>
+          </div>
+
+          <!-- File Explorer Table -->
+          <div class="win-table-box">
+            <table class="win-table">
+              <thead>
+                <tr>
+                  <th style="width: 36px; text-align: center;">
+                    <input type="checkbox" id="select-all-checkbox" aria-label="选择当前目录全部项目">
+                  </th>
+                  <th>名称</th>
+                  <th style="width: 140px;">修改日期</th>
+                  <th style="width: 90px;">类型</th>
+                  <th style="width: 100px; text-align: right;">大小</th>
+                  <th style="width: 90px;">权限</th>
+                  <th style="width: 170px;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="files-table-body">
+                <tr><td colspan="7" style="text-align: center; color: var(--win-text-muted);">正在加载文件列表...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 2. CPU DETAILED MONITOR (Windows Task Manager Style) -->
+        <div class="view-panel" id="view-monitor-cpu">
+          <div class="perf-header">
+            <div>
+              <div style="font-size: 12px; color: var(--win-text-secondary);">CPU 处理器实时利用率</div>
+              <div class="perf-title-big" id="cpu-main-val">--%</div>
+            </div>
+            <div style="text-align: right;">
+              <div style="font-size: 12px; color: var(--win-text-secondary);">处理器规格</div>
+              <div id="cpu-main-model" style="font-weight: 600; color: var(--win-text-primary);">--</div>
+              <div style="font-size: 11px; color: var(--win-text-muted);" id="cpu-main-sub">-- 核心 | 频率: --</div>
+            </div>
+          </div>
+
+          <div style="margin: 4px 0;">
+            <div class="win-progress">
+              <div class="win-progress-bar" id="cpu-main-progress" style="width: 0%;"></div>
+            </div>
+          </div>
+
+          <div class="perf-grid-2">
+            <div class="perf-card">
+              <div class="perf-card-title">处理器核心与架构指标</div>
+              <div class="win-prop-row"><span class="prop-name">处理器型号</span><span class="prop-val" id="cpu-prop-model">--</span></div>
+              <div class="win-prop-row"><span class="prop-name">物理/逻辑核心</span><span class="prop-val" id="cpu-prop-cores">--</span></div>
+              <div class="win-prop-row"><span class="prop-name">当前时钟速度</span><span class="prop-val" id="cpu-prop-freq">--</span></div>
+              <div class="win-prop-row"><span class="prop-name">L3 高速缓存</span><span class="prop-val" id="cpu-prop-cache">--</span></div>
+              <div class="win-prop-row"><span class="prop-name">系统架构</span><span class="prop-val" id="cpu-prop-arch">--</span></div>
+              <div class="win-prop-row"><span class="prop-name">系统 1/5/15 分钟负载</span><span class="prop-val" id="cpu-prop-load">--</span></div>
+            </div>
+
+            <div class="perf-card">
+              <div class="perf-card-title">CPU 占用最高的前 5 个活跃进程</div>
+              <table class="win-table" style="margin-top: 4px;">
+                <thead>
+                  <tr>
+                    <th>PID</th>
+                    <th>用户</th>
+                    <th>CPU%</th>
+                    <th>进程命令</th>
+                  </tr>
+                </thead>
+                <tbody id="cpu-top-processes-body">
+                  <tr><td colspan="4" style="text-align: center; color: var(--win-text-muted);">暂无进程数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. GPU DETAILED MONITOR -->
+        <div class="view-panel" id="view-monitor-gpu">
+          <div class="perf-header">
+            <div>
+              <div style="font-size: 12px; color: var(--win-text-secondary);">GPU 显卡核心利用率</div>
+              <div class="perf-title-big" id="gpu-main-val">--%</div>
+            </div>
+            <div style="text-align: right;">
+              <div style="font-size: 12px; color: var(--win-text-secondary);">显卡适配器</div>
+              <div id="gpu-main-name" style="font-weight: 600; color: var(--win-text-primary);">检测中...</div>
+              <div style="font-size: 11px; color: var(--win-text-muted);" id="gpu-main-sub">显存: -- | 驱动: --</div>
+            </div>
+          </div>
+
+          <div id="gpu-container-content" style="display: flex; flex-direction: column; gap: 10px; margin-top: 4px;"></div>
+        </div>
+
+        <!-- 4. RAM DETAILED MONITOR -->
+        <div class="view-panel" id="view-monitor-ram">
+          <div class="perf-header">
+            <div>
+              <div style="font-size: 12px; color: var(--win-text-secondary);">内存 (RAM) 使用率</div>
+              <div class="perf-title-big" id="ram-main-val">--%</div>
+            </div>
+            <div style="text-align: right;">
+              <div style="font-size: 12px; color: var(--win-text-secondary);">内存容量占用</div>
+              <div id="ram-main-usage" style="font-weight: 600; color: var(--win-text-primary);">0 / 0 GB</div>
+              <div style="font-size: 11px; color: var(--win-text-muted);" id="ram-main-avail">可用: 0 GB</div>
+            </div>
+          </div>
+
+          <div style="margin: 4px 0;">
+            <div class="win-progress">
+              <div class="win-progress-bar" id="ram-main-progress" style="width: 0%;"></div>
+            </div>
+          </div>
+
+          <div class="perf-grid-2">
+            <div class="perf-card">
+              <div class="perf-card-title">内存物理与交换空间明细</div>
+              <div class="win-prop-row"><span class="prop-name">物理内存总量 (Total)</span><span class="prop-val" id="ram-prop-total">--</span></div>
+              <div class="win-prop-row"><span class="prop-name">已使用内存 (In Use)</span><span class="prop-val" id="ram-prop-used">--</span></div>
+              <div class="win-prop-row"><span class="prop-name">可用内存 (Available)</span><span class="prop-val" id="ram-prop-avail">--</span></div>
+              <div class="win-prop-row"><span class="prop-name">空闲内存 (Free)</span><span class="prop-val" id="ram-prop-free">--</span></div>
+              <div class="win-prop-row"><span class="prop-name">系统缓存 (Cached)</span><span class="prop-val" id="ram-prop-cached">--</span></div>
+              <div class="win-prop-row"><span class="prop-name">内核缓冲区 (Buffers)</span><span class="prop-val" id="ram-prop-buffers">--</span></div>
+              <div class="win-prop-row"><span class="prop-name">内核 Slab 内存</span><span class="prop-val" id="ram-prop-slab">--</span></div>
+              <div class="win-prop-row"><span class="prop-name">Swap 交换文件/分区</span><span class="prop-val" id="ram-prop-swap">--</span></div>
+            </div>
+
+            <div class="perf-card">
+              <div class="perf-card-title">内存占用最高的前 5 个活跃进程</div>
+              <table class="win-table" style="margin-top: 4px;">
+                <thead>
+                  <tr>
+                    <th>PID</th>
+                    <th>用户</th>
+                    <th>MEM%</th>
+                    <th>进程命令</th>
+                  </tr>
+                </thead>
+                <tbody id="ram-top-processes-body">
+                  <tr><td colspan="4" style="text-align: center; color: var(--win-text-muted);">暂无进程数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. SSD & STORAGE DETAILED MONITOR -->
+        <div class="view-panel" id="view-monitor-ssd">
+          <div class="perf-header">
+            <div>
+              <div style="font-size: 12px; color: var(--win-text-secondary);">SSD / 磁盘实时 I/O 吞吐速度</div>
+              <div class="perf-title-big" id="ssd-main-io">读: 0 KB/s | 写: 0 KB/s</div>
+            </div>
+            <div style="text-align: right;">
+              <div style="font-size: 12px; color: var(--win-text-secondary);">总存储池容量</div>
+              <div id="ssd-main-total" style="font-weight: 600; color: var(--win-text-primary);">0 / 0 GB (0%)</div>
+              <div style="font-size: 11px; color: var(--win-text-muted);">支持 NVMe SSD / SATA / SCSI / VirtIO</div>
+            </div>
+          </div>
+
+          <div class="perf-card" style="margin-top: 8px;">
+            <div class="perf-card-title">SSD / 磁盘分区与挂载卷列表</div>
+            <div class="win-table-box" style="max-height: 380px;">
+              <table class="win-table">
+                <thead>
+                  <tr>
+                    <th>挂载点</th>
+                    <th>设备卷路径</th>
+                    <th>总容量</th>
+                    <th>已用空间</th>
+                    <th>可用空间</th>
+                    <th>空间使用率</th>
+                    <th>Inodes 节点</th>
+                  </tr>
+                </thead>
+                <tbody id="ssd-table-body">
+                  <tr><td colspan="7" style="text-align: center; color: var(--win-text-muted);">暂无挂载卷数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- 6. TERMINAL VIEW -->
+        <div class="view-panel" id="view-terminal">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <span id="terminal-session-label" style="font-size: 12px; color: var(--win-text-secondary);">会话: 目标服务器 (pty)</span>
+            <div style="display: flex; gap: 6px;">
+              <button class="cmd-btn" id="btn-term-reconnect">重新连接</button>
+              <button class="cmd-btn" id="btn-term-clear">清屏</button>
+            </div>
+          </div>
+          <div style="flex: 1; background-color: #0c0c0c; border: 1px solid var(--win-border); border-radius: var(--radius-win); padding: 8px; overflow: hidden;" id="terminal-container"></div>
+        </div>
+
+        <!-- 7. DOCKER VIEW -->
+        <div class="view-panel" id="view-docker">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <span style="font-weight: 600; font-size: 13px;">Docker 容器</span>
+              <span id="docker-version-badge" class="titlebar-host-badge" style="font-size: 11px;">--</span>
+            </div>
+            <div style="display: flex; gap: 6px;">
+              <button class="cmd-btn primary" id="btn-docker-pull-modal">拉取新镜像</button>
+              <button class="cmd-btn" id="btn-refresh-docker">刷新容器</button>
+            </div>
+          </div>
+          <div class="win-table-box" style="max-height: 320px;">
+            <table class="win-table">
+              <thead>
+                <tr>
+                  <th>容器名称</th>
+                  <th>镜像</th>
+                  <th>运行状态</th>
+                  <th>端口映射</th>
+                  <th>CPU / 内存占用</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="docker-table-body">
+                <tr><td colspan="6" style="text-align: center; color: var(--win-text-muted);">正在加载容器...</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px;">
+            <span style="font-weight: 600; font-size: 13px;">本地 Docker 镜像</span>
+            <button class="cmd-btn" id="btn-refresh-images">刷新镜像</button>
+          </div>
+          <div class="win-table-box" style="max-height: 240px;">
+            <table class="win-table">
+              <thead>
+                <tr>
+                  <th>仓库名称</th>
+                  <th>标签 (Tag)</th>
+                  <th>镜像 ID</th>
+                  <th>创建时间</th>
+                  <th>大小</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="docker-images-body">
+                <tr><td colspan="6" style="text-align: center; color: var(--win-text-muted);">暂无镜像</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 8. SERVICES VIEW -->
+        <div class="view-panel" id="view-services">
+          <div class="perf-grid-2" style="height: 100%;">
+            <div class="perf-card" style="flex: 1;">
+              <div class="perf-card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                <span>正在运行的进程 (按 CPU/内存占用)</span>
+                <button class="cmd-btn" id="btn-refresh-processes" style="padding: 2px 8px;">刷新</button>
+              </div>
+              <div class="win-table-box" style="max-height: 520px;">
+                <table class="win-table">
+                  <thead>
+                    <tr>
+                      <th>PID</th>
+                      <th>用户</th>
+                      <th>CPU%</th>
+                      <th>MEM%</th>
+                      <th>命令</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="process-table-body">
+                    <tr><td colspan="6" style="text-align: center; color: var(--win-text-muted);">加载中...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="perf-card" style="flex: 1;">
+              <div class="perf-card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                <span>Systemd 系统服务列表</span>
+                <button class="cmd-btn" id="btn-refresh-systemd" style="padding: 2px 8px;">刷新</button>
+              </div>
+              <div class="win-table-box" style="max-height: 520px;">
+                <table class="win-table">
+                  <thead>
+                    <tr>
+                      <th>服务名称</th>
+                      <th>状态</th>
+                      <th>描述</th>
+                      <th>控制</th>
+                    </tr>
+                  </thead>
+                  <tbody id="systemd-table-body">
+                    <tr><td colspan="4" style="text-align: center; color: var(--win-text-muted);">加载中...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 9. SCRIPTS VIEW -->
+        <div class="view-panel" id="view-scripts">
+          <div class="perf-grid-2">
+            <div class="perf-card">
+              <div class="perf-card-title">一键常用维护脚本</div>
+              <div id="presets-container" style="display: flex; flex-direction: column; gap: 8px; margin-top: 6px;"></div>
+            </div>
+
+            <div class="perf-card">
+              <div class="perf-card-title">自定义 Shell 指令执行控制台</div>
+              <div style="display: flex; gap: 6px;">
+                <input type="text" id="custom-command-input" class="win-form-group" style="flex: 1; padding: 6px 10px; margin: 0; background-color: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); font-family: var(--font-mono);" placeholder="输入命令，例如: uname -a, free -m, ip a...">
+                <button class="cmd-btn primary" id="btn-run-custom-cmd">执行命令</button>
+              </div>
+              <div style="margin-top: 10px;">
+                <div style="font-size: 11px; color: var(--win-text-secondary); margin-bottom: 4px;">控制台输出:</div>
+                <div class="win-code-editor" id="script-console-output" style="height: 380px; overflow-y: auto;">等待输入指令...</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 10. LLM STUDIO VIEW -->
+        <div class="view-panel" id="view-llm">
+          <!-- Top Sub-Navigation Tabs -->
+          <div class="llm-nav-tabs-bar">
+            <button class="llm-nav-tab active" data-tab="chat" data-i18n="llm.tab_chat">💬 AI 对话体验 (Chat Studio)</button>
+            <button class="llm-nav-tab" data-tab="hf" data-i18n="llm.tab_hf">🤗 Hugging Face 云端模型库</button>
+            <button class="llm-nav-tab" data-tab="local" data-i18n="llm.tab_local">📦 本地模型与存储管理 (/mnt/models)</button>
+            <button class="llm-nav-tab" data-tab="tasks" data-i18n="llm.tab_tasks">⬇️ 下载任务管理器 <span class="tab-badge" id="tasks-badge-count" style="display:none;"></span></button>
+          </div>
+
+          <!-- TAB 1: Chat Studio -->
+          <div class="llm-tab-content active" id="llm-tab-chat">
+            <div class="llm-layout-split">
+              <!-- Left Pane: LLM Service & Model Repository -->
+              <div class="llm-left-pane">
+                <!-- Service Engine Status Card -->
+                <div class="perf-card">
+                  <div class="perf-card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>🤖 llama-server 推理服务</span>
+                    <span id="llm-status-badge" style="font-size: 11px; font-weight: 600;">检测中...</span>
+                  </div>
+                  <div class="win-prop-row"><span class="prop-name">已加载模型</span><span class="prop-val" id="llm-active-model-name" style="font-size: 11px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">--</span></div>
+                  <div class="win-prop-row"><span class="prop-name">OpenAI 兼容接口</span><span class="prop-val" id="llm-active-port">等待服务启动</span></div>
+                  <div class="win-prop-row"><span class="prop-name">计算后端 (GPU)</span><span class="prop-val" style="color: var(--perf-green);">AMD Instinct MI50 (ROCm)</span></div>
+                  <div class="win-prop-row"><span class="prop-name">运行时间</span><span class="prop-val" id="llm-active-uptime">--</span></div>
+                  <div class="win-prop-row"><span class="prop-name">启动参数</span><span class="prop-val" id="llm-active-params">--</span></div>
+                  <div class="win-prop-row"><span class="prop-name">进程资源</span><span class="prop-val" id="llm-active-resources">--</span></div>
+                  <div style="font-size: 10px; font-family: var(--font-mono); color: var(--win-text-secondary); background: var(--win-address-bg); padding: 6px; border-radius: var(--radius-win); border: 1px solid var(--win-border); max-height: 54px; overflow-y: auto; word-break: break-all;" id="llm-active-cmd">--</div>
+
+                  <div style="display: flex; gap: 6px; margin-top: 6px;">
+                    <button class="cmd-btn primary btn-sm" id="btn-llm-start-modal" style="flex: 1;">🚀 启动服务</button>
+                    <button class="cmd-btn btn-sm" id="btn-llm-restart" style="display: none;">🔄 重启</button>
+                    <button class="cmd-btn btn-sm danger" id="btn-llm-stop" style="display: none;">⏹️ 停止</button>
+                    <button class="cmd-btn btn-sm" id="btn-llm-logs">📋 日志</button>
+                  </div>
+                </div>
+
+                <!-- Slots status -->
+                <div class="perf-card">
+                  <div class="perf-card-title">⚡ 推理 Slot 调度明细</div>
+                  <div id="llm-slots-container" style="display: flex; flex-direction: column; gap: 4px; margin-top: 4px;"></div>
+                </div>
+              </div>
+
+              <!-- Right Pane: Interactive AI Chat Studio -->
+              <div class="llm-chat-pane">
+                <div class="llm-chat-header">
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-weight: 600; font-size: 13px;">💬 模型实时推理体验</span>
+                    <span class="titlebar-host-badge" id="chat-model-title-badge" style="font-size: 10px;">--</span>
+                  </div>
+                  <div style="display: flex; gap: 6px;">
+                    <button class="cmd-btn btn-sm" id="btn-chat-clear">清空对话</button>
+                  </div>
+                </div>
+
+                <!-- Parameter Setting Bar -->
+                <div style="padding: 8px 14px; background-color: var(--win-toolbar); border-bottom: 1px solid var(--win-border); display: flex; flex-wrap: wrap; gap: 14px; font-size: 11px; align-items: center;">
+                  <div style="flex: 1; min-width: 240px;">
+                    <span style="color: var(--win-text-secondary); margin-right: 4px;">系统提示词 (System Prompt):</span>
+                    <input type="text" id="chat-system-prompt" style="width: 100%; background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 3px 8px; font-size: 11px; margin-top: 2px;" placeholder="例如: 你是一个资深的 Linux 系统架构师与运维专家...">
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="color: var(--win-text-secondary);">Temperature:</span>
+                    <input type="range" id="slider-temperature" min="0" max="2" step="0.1" value="0.7" style="width: 70px;">
+                    <span id="val-temperature" style="font-family: var(--font-mono); width: 22px;">0.7</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="color: var(--win-text-secondary);">Top-P:</span>
+                    <input type="range" id="slider-topp" min="0" max="1" step="0.05" value="0.9" style="width: 70px;">
+                    <span id="val-topp" style="font-family: var(--font-mono); width: 22px;">0.9</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="color: var(--win-text-secondary);">Max Tokens:</span>
+                    <input type="range" id="slider-maxtokens" min="256" max="16384" step="256" value="4096" style="width: 70px;">
+                    <span id="val-maxtokens" style="font-family: var(--font-mono); width: 34px;">4096</span>
+                  </div>
+                </div>
+
+                <!-- Message Stream Area -->
+                <div class="chat-messages-container" id="chat-messages-container">
+                  <div style="text-align: center; color: var(--win-text-muted); margin: auto; padding: 40px 20px;">
+                    <div style="font-size: 36px; margin-bottom: 8px;">🤖</div>
+                    <div style="font-size: 14px; font-weight: 600; color: var(--win-text-primary);">本地大模型推理交互与性能测试台</div>
+                    <div id="chat-empty-subtitle" style="font-size: 12px; margin-top: 4px;">由目标服务器上的本地推理服务驱动</div>
+                  </div>
+                </div>
+
+                <!-- Live Performance & Token Generation Speed Bar -->
+                <div id="chat-perf-bar" style="display: flex; justify-content: space-between; align-items: center; padding: 4px 12px; background: var(--win-address-bg); border-top: 1px solid var(--win-border); font-size: 11px; color: var(--win-text-secondary);">
+                  <div style="display: flex; gap: 14px; align-items: center;">
+                    <span>⚡ 推理速率: <strong id="chat-token-speed" style="color: var(--perf-green); font-family: var(--font-mono);">-- t/s</strong></span>
+                    <span>⏱️ 首字耗时 (TTFT): <strong id="chat-ttft" style="color: var(--win-accent); font-family: var(--font-mono);">-- ms</strong></span>
+                    <span>📊 已生成: <strong id="chat-token-count" style="font-family: var(--font-mono);">0 tokens</strong></span>
+                  </div>
+                  <div style="display: flex; gap: 6px; align-items: center;">
+                    <span style="font-size: 10px;">⚡ 快速测试:</span>
+                    <button class="cmd-btn btn-sm" data-action="send-benchmark" data-benchmark="code" style="font-size: 10px; padding: 1px 6px;">🐍 Python 算法</button>
+                    <button class="cmd-btn btn-sm" data-action="send-benchmark" data-benchmark="reasoning" style="font-size: 10px; padding: 1px 6px;">🧠 逻辑推理</button>
+                    <button class="cmd-btn btn-sm" data-action="send-benchmark" data-benchmark="speed" style="font-size: 10px; padding: 1px 6px;">🚀 极速长文测速</button>
+                  </div>
+                </div>
+
+                <!-- Input Bar -->
+                <div class="chat-input-row">
+                  <textarea id="chat-user-input" placeholder="输入你想咨询的问题或指令，按 Enter 发送，Shift+Enter 换行..."></textarea>
+                  <button class="cmd-btn primary" id="btn-chat-send" style="height: 48px; padding: 0 16px;">发送</button>
+                  <button class="cmd-btn danger" id="btn-chat-stop" style="display: none; height: 48px; padding: 0 16px;">中止</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- TAB 2: Hugging Face Online Explorer -->
+          <div class="llm-tab-content" id="llm-tab-hf">
+            <div style="padding: 12px 14px; background: var(--win-toolbar); border-bottom: 1px solid var(--win-border); display: flex; flex-direction: column; gap: 8px;">
+              <!-- Row 1: Search & Sorting -->
+              <div style="display: flex; gap: 10px; align-items: center;">
+                <div style="flex: 1; display: flex; gap: 6px;">
+                  <input type="text" id="hf-search-query" placeholder="在 Hugging Face 搜索开源模型 (如: Qwen2.5, DeepSeek-R1, Llama-3.1, Gemma-2, Coder)..." style="flex: 1; background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 6px 12px; font-size: 12px;">
+                  <select id="hf-sort-select" style="background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 6px 10px; font-size: 12px; cursor: pointer;">
+                    <option value="downloads">⬇️ 最多下载 (Most Downloads)</option>
+                    <option value="likes">❤️ 最多点赞 (Most Likes)</option>
+                    <option value="lastModified">🕒 最近更新 (Recently Updated)</option>
+                  </select>
+                  <button class="cmd-btn primary" id="btn-hf-search">🔍 搜索模型</button>
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 12px; font-size: 11px;">
+                  <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;">
+                    <input type="checkbox" id="hf-mirror-toggle"> ⚡ 启用国内极速镜像 (hf-mirror.com)
+                  </label>
+                  <input type="password" id="hf-access-token" placeholder="🔑 HF Access Token (可选)" style="background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 4px 8px; font-size: 11px; width: 160px;" title="用于下载受限模型如 Llama-3 / Gemma-2，自动本地持久化保存">
+                </div>
+              </div>
+
+              <!-- Row 2: Direct Repo Jump -->
+              <div style="display: flex; gap: 10px; align-items: center; font-size: 11px;">
+                <span style="color: var(--win-text-secondary); white-space: nowrap;">⚡ 快速直达:</span>
+                <input type="text" id="hf-direct-repo-input" placeholder="输入任意 Hugging Face Repo ID (如: Qwen/Qwen2.5-7B-Instruct-GGUF, bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF)..." style="flex: 1; background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 4px 10px; font-size: 11px; font-family: var(--font-mono);">
+                <button class="cmd-btn btn-sm" id="btn-hf-direct-jump">打开仓库文件 ➔</button>
+              </div>
+
+              <!-- Row 3: Quick Filter Category Chips -->
+              <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
+                <span style="font-size: 11px; color: var(--win-text-secondary);">热门分类:</span>
+                <button class="hf-tag-btn active" data-tag="gguf">🌟 全部热门 GGUF</button>
+                <button class="hf-tag-btn" data-tag="DeepSeek-R1 GGUF">🧠 DeepSeek-R1 深度求索</button>
+                <button class="hf-tag-btn" data-tag="Qwen2.5 GGUF">🤖 Qwen2.5 通义千问</button>
+                <button class="hf-tag-btn" data-tag="Llama-3.1 GGUF">🦙 Meta Llama-3.1 / 3.3</button>
+                <button class="hf-tag-btn" data-tag="Gemma-2 GGUF">💎 Google Gemma-2</button>
+                <button class="hf-tag-btn" data-tag="Coder GGUF">💻 代码编程专用模型</button>
+                <button class="hf-tag-btn" data-tag="Chinese GGUF">💬 中文全能大模型</button>
+                <button class="hf-tag-btn" data-tag="1.5B GGUF">⚡ 端侧轻量 (1.5B~7B)</button>
+                <button class="hf-tag-btn" data-tag="32B GGUF">🏋️ 旗舰 MoE (14B~70B)</button>
+              </div>
+            </div>
+
+            <!-- HF Models Grid -->
+            <div class="hf-models-grid" id="hf-models-grid"></div>
+          </div>
+
+          <!-- TAB 3: Local Models Management -->
+          <div class="llm-tab-content" id="llm-tab-local" style="padding: 14px; overflow-y: auto;">
+            <!-- Disk Storage Banner -->
+            <div class="perf-card" style="margin-bottom: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <div class="perf-card-title">📁 大模型专用存储盘 (/mnt/models)</div>
+                  <div style="font-size: 11px; color: var(--win-text-secondary); margin-top: 2px;" id="local-disk-summary-text">存储空间: 检测中...</div>
+                </div>
+                <div style="display: flex; gap: 6px;">
+                  <button class="cmd-btn btn-sm" id="btn-refresh-local-models">🔄 刷新本地模型库</button>
+                  <button class="cmd-btn primary btn-sm" id="btn-start-custom-model" data-action="show-modal" data-modal="modal-start-llm">➕ 启动自定义模型</button>
+                </div>
+              </div>
+              <div class="win-progress" style="margin-top: 8px;">
+                <div class="win-progress-bar green" id="local-disk-progress" style="width: 0%;"></div>
+              </div>
+            </div>
+
+            <!-- Local Models Table -->
+            <div class="perf-card">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <div class="perf-card-title" style="margin-bottom: 0;">📦 本地已下载 GGUF 模型列表</div>
+                <input type="text" id="local-models-filter" placeholder="🔍 快速搜索本地模型名称 / 量化等级..." style="background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 4px 10px; font-size: 11px; width: 260px;">
+              </div>
+              <table class="win-table" style="margin-top: 4px;">
+                <thead>
+                  <tr>
+                    <th>模型文件 / 存储路径</th>
+                    <th>量化规格</th>
+                    <th>文件体积</th>
+                    <th>下载 / 修改时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="local-models-table-body">
+                  <tr><td colspan="5" style="text-align: center; color: var(--win-text-muted); padding: 20px;">正在载入模型列表...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- TAB 4: Download Tasks Manager -->
+          <div class="llm-tab-content" id="llm-tab-tasks" style="padding: 14px; overflow-y: auto;">
+            <div class="perf-card">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <div class="perf-card-title">⬇️ 云端模型后台下载任务队列</div>
+                  <div style="font-size: 11px; color: var(--win-text-secondary); margin-top: 2px;">支持断点续传、实时速率计算与完成后一键载入 GPU 推理</div>
+                </div>
+                <button class="cmd-btn btn-sm" id="btn-refresh-download-tasks">🔄 刷新任务</button>
+              </div>
+
+              <table class="win-table" style="margin-top: 10px;">
+                <thead>
+                  <tr>
+                    <th>下载模型文件</th>
+                    <th>下载进度</th>
+                    <th>当前网速</th>
+                    <th>预计剩余时间</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="download-tasks-table-body">
+                  <tr><td colspan="6" style="text-align: center; color: var(--win-text-muted); padding: 30px;">暂无活跃下载任务</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- 11. FAN & COOLING VIEW -->
+        <div class="view-panel" id="view-fan">
+          <div class="perf-header">
+            <div>
+              <div style="font-size: 12px; color: var(--win-text-secondary);">P12 高压涡轮风扇实时转速</div>
+              <div class="perf-title-big" id="fan-p12-rpm">-- RPM</div>
+              <div style="font-size: 11px; color: var(--win-text-secondary); margin-top: 2px;" id="fan-cpu-status">CPU 风扇: --% PWM | 封装: --°C</div>
+            </div>
+            <div style="text-align: right;">
+              <div style="font-size: 12px; color: var(--win-text-secondary);">温控状态与策略</div>
+              <div id="fan-service-badge" style="font-weight: 600; font-size: 13px;">检测中...</div>
+              <div style="display: flex; gap: 6px; margin-top: 6px; justify-content: flex-end;">
+                <button class="cmd-btn btn-sm" id="btn-fan-service-restart" data-action="control-fan-service" data-service-action="restart">🔄 重启温控服务</button>
+                <button class="cmd-btn btn-sm danger" id="btn-fan-service-stop" data-action="control-fan-service" data-service-action="stop">⏹️ 停止服务</button>
+                <button class="cmd-btn btn-sm" id="btn-fan-logs-modal" data-action="load-fan-logs">📋 运行日志</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Full Width Historical Temp & Power Trends Card -->
+          <div class="perf-card" style="margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <div class="perf-card-title" style="margin-bottom: 0;">📈 温度与功耗实时历史曲线</div>
+                <div style="display: flex; gap: 4px;">
+                  <button class="hf-tag-btn fan-range-btn active" data-range="5m">⏱️ 5 分钟</button>
+                  <button class="hf-tag-btn fan-range-btn" data-range="30m">⏱️ 30 分钟</button>
+                  <button class="hf-tag-btn fan-range-btn" data-range="60m">⏱️ 60 分钟</button>
+                </div>
+                <button class="cmd-btn btn-sm" data-action="export-fan-chart" title="将当前温度与能耗曲线保存为高清 PNG 图片" style="font-size: 11px; padding: 2px 8px;">
+                  📸 导出图表
+                </button>
+                <span class="titlebar-host-badge" style="font-size: 10px; color: var(--perf-green); background: rgba(16, 185, 129, 0.1);">● 实时采样 3s/次</span>
+              </div>
+
+              <!-- Interactive Legend Pills with Toggle & Dynamic Readouts -->
+              <div style="display: flex; gap: 8px; font-size: 11px; flex-wrap: wrap; align-items: center;">
+                <button type="button" class="fan-legend-item" id="legend-item-cpu" data-action="toggle-fan-series" data-series="cpu" aria-pressed="true" style="display: flex; align-items: center; gap: 4px; cursor: pointer; padding: 2px 6px; border-radius: 4px; user-select: none;" title="点击显示/隐藏 CPU 封装温度曲线">
+                  <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background-color: #ef4444;"></span>
+                  <span style="color: var(--win-text-secondary);">CPU 封装:</span>
+                  <strong id="chart-legend-cpu" style="font-family: var(--font-mono); color: #ef4444;">-- °C</strong>
+                </button>
+                <button type="button" class="fan-legend-item" id="legend-item-gpuj" data-action="toggle-fan-series" data-series="gpuJ" aria-pressed="true" style="display: flex; align-items: center; gap: 4px; cursor: pointer; padding: 2px 6px; border-radius: 4px; user-select: none;" title="点击显示/隐藏 GPU 结温曲线">
+                  <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background-color: #f97316;"></span>
+                  <span style="color: var(--win-text-secondary);">GPU 结温:</span>
+                  <strong id="chart-legend-gpuj" style="font-family: var(--font-mono); color: #f97316;">-- °C</strong>
+                </button>
+                <button type="button" class="fan-legend-item" id="legend-item-gpue" data-action="toggle-fan-series" data-series="gpuE" aria-pressed="true" style="display: flex; align-items: center; gap: 4px; cursor: pointer; padding: 2px 6px; border-radius: 4px; user-select: none;" title="点击显示/隐藏 GPU 核心温度曲线">
+                  <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background-color: #eab308;"></span>
+                  <span style="color: var(--win-text-secondary);">GPU 核心:</span>
+                  <strong id="chart-legend-gpue" style="font-family: var(--font-mono); color: #eab308;">-- °C</strong>
+                </button>
+                <button type="button" class="fan-legend-item" id="legend-item-gpup" data-action="toggle-fan-series" data-series="gpuP" aria-pressed="true" style="display: flex; align-items: center; gap: 4px; cursor: pointer; padding: 2px 6px; border-radius: 4px; user-select: none;" title="点击显示/隐藏 GPU 功耗曲线">
+                  <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background-color: #3b82f6;"></span>
+                  <span style="color: var(--win-text-secondary);">GPU 功耗:</span>
+                  <strong id="chart-legend-gpup" style="font-family: var(--font-mono); color: #3b82f6;">-- W</strong>
+                </button>
+                <div style="display: flex; align-items: center; gap: 4px; padding: 2px 6px;">
+                  <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background-color: #10b981;"></span>
+                  <span style="color: var(--win-text-secondary);">P12 涡轮:</span>
+                  <strong id="chart-legend-p12" style="font-family: var(--font-mono); color: #10b981;">-- RPM</strong>
+                </div>
+              </div>
+            </div>
+
+            <!-- Dynamic Canvas Chart Container -->
+            <div style="position: relative; width: 100%; height: 230px; background: var(--win-address-bg); border-radius: var(--radius-win); border: 1px solid var(--win-border); overflow: hidden;">
+              <canvas id="fan-history-canvas" style="width: 100%; height: 100%; display: block;"></canvas>
+              <div id="fan-chart-tooltip" style="position: absolute; display: none; background: var(--win-card); border: 1px solid var(--win-border); border-radius: var(--radius-win); padding: 6px 10px; font-size: 11px; pointer-events: none; box-shadow: var(--shadow-win); z-index: 10;"></div>
+            </div>
+
+            <!-- Bottom Min / Avg / Max Statistics Grid -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-top: 8px;">
+              <div class="sensor-chip" style="flex-direction: column; align-items: flex-start; padding: 6px 10px;">
+                <span class="sensor-chip-name" style="color: #ef4444;">🔴 CPU 封装温度统计</span>
+                <span style="font-size: 11px; font-family: var(--font-mono); margin-top: 2px;" id="stat-cpu-summary">最小: --°C | 平均: --°C | 最大: --°C</span>
+              </div>
+              <div class="sensor-chip" style="flex-direction: column; align-items: flex-start; padding: 6px 10px;">
+                <span class="sensor-chip-name" style="color: #f97316;">🟠 GPU 结温统计</span>
+                <span style="font-size: 11px; font-family: var(--font-mono); margin-top: 2px;" id="stat-gpuj-summary">最小: --°C | 平均: --°C | 最大: --°C</span>
+              </div>
+              <div class="sensor-chip" style="flex-direction: column; align-items: flex-start; padding: 6px 10px;">
+                <span class="sensor-chip-name" style="color: #3b82f6;">⚡ GPU 功耗统计</span>
+                <span style="font-size: 11px; font-family: var(--font-mono); margin-top: 2px;" id="stat-gpup-summary">最小: --W | 平均: --W | 最大: --W</span>
+              </div>
+              <div class="sensor-chip" style="flex-direction: column; align-items: flex-start; padding: 6px 10px;">
+                <span class="sensor-chip-name" style="color: #10b981;">🌪️ P12 风扇转速</span>
+                <span style="font-size: 11px; font-family: var(--font-mono); margin-top: 2px;" id="stat-p12-summary">当前: -- RPM | 均值: -- RPM</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="perf-grid-2">
+            <!-- Left: Fan speeds & Manual controls -->
+            <div style="display: flex; flex-direction: column; gap: 12px;">
+              <!-- Fan Matrix readouts -->
+              <div class="perf-card">
+                <div class="perf-card-title">🌪️ 全机风扇转速与实时 PWM 占空比</div>
+
+                <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 8px;">
+                  <!-- P12 Fan -->
+                  <div>
+                    <div class="win-prop-row">
+                      <span class="prop-name">1. P12 暴力涡轮外置风扇 (MI50 专用)</span>
+                      <span class="prop-val" id="fan-p12-pwm">--%</span>
+                    </div>
+                    <div class="win-progress" style="margin-top: 3px;">
+                      <div class="win-progress-bar green" id="fan-p12-progress" style="width: 0%;"></div>
+                    </div>
+                  </div>
+
+                  <!-- CPU Fan -->
+                  <div>
+                    <div class="win-prop-row">
+                      <span class="prop-name">2. CPU 处理器散热风扇 (CPU Cooler)</span>
+                      <span class="prop-val"><span id="fan-cpu-rpm" style="margin-right: 6px; color: var(--win-text-secondary); font-size: 11px;">--</span><span id="fan-cpu-pwm" style="font-weight: 600;">--%</span></span>
+                    </div>
+                    <div class="win-progress" style="margin-top: 3px;">
+                      <div class="win-progress-bar green" id="fan-cpu-progress" style="width: 0%;"></div>
+                    </div>
+                  </div>
+
+                  <!-- GPU Fan -->
+                  <div>
+                    <div class="win-prop-row">
+                      <span class="prop-name">3. MI50 加速卡板载内部风扇</span>
+                      <span class="prop-val"><span id="fan-gpu-rpm" style="margin-right: 6px; color: var(--win-text-secondary); font-size: 11px;">--</span><span id="fan-gpu-pwm" style="font-weight: 600;">--%</span></span>
+                    </div>
+                    <div class="win-progress" style="margin-top: 3px;">
+                      <div class="win-progress-bar" id="fan-gpu-progress" style="width: 0%;"></div>
+                    </div>
+                  </div>
+
+                  <!-- Aux Fan -->
+                  <div>
+                    <div class="win-prop-row">
+                      <span class="prop-name">4. 机箱辅助散热风扇 (Chassis Aux)</span>
+                      <span class="prop-val" id="fan-aux-pwm">--%</span>
+                    </div>
+                    <div class="win-progress" style="margin-top: 3px;">
+                      <div class="win-progress-bar" id="fan-aux-progress" style="width: 0%;"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Presets -->
+              <div class="perf-card">
+                <div class="perf-card-title" data-i18n="fan.service_status">⚡ 一键全机温控模式预设</div>
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 4px;">
+                  <button class="cmd-btn" id="btn-fan-mode-full" data-action="set-fan-mode" data-mode="full" style="padding: 10px 6px; flex-direction: column; gap: 4px; text-align: center; cursor: pointer;">
+                    <span style="font-size: 18px;">❄️</span>
+                    <span style="font-weight: 600;" data-i18n="fan.preset_full">100% 极速强冷</span>
+                    <span style="font-size: 10px; opacity: 0.9;">4500+ RPM</span>
+                  </button>
+                  <button class="cmd-btn" id="btn-fan-mode-auto" data-action="set-fan-mode" data-mode="auto" style="padding: 10px 6px; flex-direction: column; gap: 4px; text-align: center; border-color: var(--win-accent); cursor: pointer;">
+                    <span style="font-size: 18px;">🚀</span>
+                    <span style="font-weight: 600; color: var(--win-accent);" data-i18n="fan.preset_auto">智能自动温控</span>
+                    <span style="font-size: 10px; color: var(--win-text-secondary);">Dynamic PID</span>
+                  </button>
+                  <button class="cmd-btn" id="btn-fan-mode-quiet" data-action="set-fan-mode" data-mode="quiet" style="padding: 10px 6px; flex-direction: column; gap: 4px; text-align: center; cursor: pointer;">
+                    <span style="font-size: 18px;">🤫</span>
+                    <span style="font-weight: 600;" data-i18n="fan.preset_quiet">全机静音待机</span>
+                    <span style="font-size: 10px; color: var(--win-text-secondary);">40% Low-Noise</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Manual Sliders for All Fans -->
+              <div class="perf-card">
+                <div class="perf-card-title" data-i18n="fan.sliders_title">🎛️ 多路风扇独立手动 PWM 调速</div>
+
+                <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 10px;">
+                  <!-- P12 Slider -->
+                  <div>
+                    <div class="win-prop-row">
+                      <span class="prop-name">P12 外置风机</span>
+                      <span class="prop-val" id="val-fan-p12">80%</span>
+                    </div>
+                    <div class="fan-slider-row">
+                      <input type="range" id="slider-fan-p12" min="20" max="100" step="5" value="80">
+                      <button class="cmd-btn btn-sm" id="btn-apply-fan-p12" data-action="apply-single-fan" data-channel="p12" data-slider="slider-fan-p12">应用</button>
+                    </div>
+                  </div>
+
+                  <!-- CPU Fan Slider -->
+                  <div>
+                    <div class="win-prop-row">
+                      <span class="prop-name">CPU 处理器风机</span>
+                      <span class="prop-val" id="val-fan-cpu">70%</span>
+                    </div>
+                    <div class="fan-slider-row">
+                      <input type="range" id="slider-fan-cpu" min="20" max="100" step="5" value="70">
+                      <button class="cmd-btn btn-sm" id="btn-apply-fan-cpu" data-action="apply-single-fan" data-channel="cpu" data-slider="slider-fan-cpu">应用</button>
+                    </div>
+                  </div>
+
+                  <!-- GPU Fan Slider -->
+                  <div>
+                    <div class="win-prop-row">
+                      <span class="prop-name">GPU 内部风机</span>
+                      <span class="prop-val" id="val-fan-gpu">65%</span>
+                    </div>
+                    <div class="fan-slider-row">
+                      <input type="range" id="slider-fan-gpu" min="20" max="100" step="5" value="65">
+                      <button class="cmd-btn btn-sm" id="btn-apply-fan-gpu" data-action="apply-single-fan" data-channel="gpu" data-slider="slider-fan-gpu">应用</button>
+                    </div>
+                  </div>
+
+                  <!-- Aux Fan Slider -->
+                  <div>
+                    <div class="win-prop-row">
+                      <span class="prop-name">机箱辅助风机</span>
+                      <span class="prop-val" id="val-fan-aux">65%</span>
+                    </div>
+                    <div class="fan-slider-row">
+                      <input type="range" id="slider-fan-aux" min="20" max="100" step="5" value="65">
+                      <button class="cmd-btn btn-sm" id="btn-apply-fan-aux" data-action="apply-single-fan" data-channel="aux" data-slider="slider-fan-aux">应用</button>
+                    </div>
+                  </div>
+
+                  <button class="cmd-btn primary" id="btn-apply-all-fan" data-action="apply-all-fans" style="margin-top: 6px; justify-content: center; cursor: pointer;" data-i18n="fan.apply_all">
+                    ⚡ 一键应用全部风扇转速设定
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right: Complete Component Temperatures -->
+            <div style="display: flex; flex-direction: column; gap: 12px;">
+              <!-- CPU Temperatures & Cores Grid -->
+              <div class="perf-card">
+                <div class="perf-card-title" data-i18n="fan.cpu_temps_title">🔲 CPU 处理器与核心温度 (Coretemp & Diode)</div>
+                <div class="win-prop-row"><span class="prop-name">CPU Package (整体封装温度)</span><span class="prop-val" id="temp-cpu-package" style="font-weight: 600;">-- °C</span></div>
+                <div class="win-prop-row"><span class="prop-name">CPU Diode (晶圆二极管测温)</span><span class="prop-val" id="temp-cpu-diode">-- °C</span></div>
+                <div class="win-prop-row"><span class="prop-name">CPU PECI 探测温度</span><span class="prop-val" id="temp-cpu-peci">-- °C</span></div>
+
+                <div style="margin-top: 8px;">
+                  <div style="font-size: 11px; color: var(--win-text-secondary); margin-bottom: 4px;">各物理 / 逻辑核心实时温度:</div>
+                  <div class="sensor-grid" id="cpu-cores-temp-grid"></div>
+                </div>
+              </div>
+
+              <!-- GPU Temperatures -->
+              <div class="perf-card">
+                <div class="perf-card-title" data-i18n="fan.gpu_temps_title">🎮 GPU 计算卡温度与能耗</div>
+                <div class="win-prop-row"><span class="prop-name">GPU Junction (结温 / 最热点)</span><span class="prop-val" id="temp-gpu-junction" style="font-weight: 600;">-- °C</span></div>
+                <div class="win-prop-row"><span class="prop-name">GPU HBM (显存堆叠温度)</span><span class="prop-val" id="temp-gpu-mem" style="font-weight: 600;">-- °C</span></div>
+                <div class="win-prop-row"><span class="prop-name">GPU Edge (核心边缘温度)</span><span class="prop-val" id="temp-gpu-edge">-- °C</span></div>
+                <div class="win-prop-row"><span class="prop-name">GPU 当前功耗 (Power Draw)</span><span class="prop-val" id="temp-gpu-power">-- W</span></div>
+              </div>
+
+              <!-- Disk Temperatures (SSDs / HDDs) -->
+              <div class="perf-card">
+                <div class="perf-card-title" data-i18n="fan.disk_temps_title">💽 磁盘与存储驱动器温度 (SMART)</div>
+                <div class="sensor-grid" id="disk-temps-container"></div>
+              </div>
+
+              <!-- Motherboard & System -->
+              <div class="perf-card">
+                <div class="perf-card-title" data-i18n="fan.sys_temps_title">📟 主板温区与网络芯片</div>
+                <div class="win-prop-row"><span class="prop-name">主板系统温区 (SYSTIN)</span><span class="prop-val" id="temp-sys-board">-- °C</span></div>
+                <div class="win-prop-row"><span class="prop-name">辅助测温传感器 (AUXTIN)</span><span class="prop-val" id="temp-sys-aux">-- °C</span></div>
+                <div class="win-prop-row"><span class="prop-name">Intel WiFi 无线网卡芯片</span><span class="prop-val" id="temp-sys-wifi">-- °C</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 12. SETTINGS & PREFERENCES VIEW -->
+        <div class="view-panel" id="view-settings" style="padding: 14px; overflow-y: auto;">
+          <div style="max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <h2 style="font-size: 18px; font-weight: 600; color: var(--win-text-primary);" data-i18n="settings.title">⚙️ 系统与客户端偏好设置</h2>
+                <div style="font-size: 11px; color: var(--win-text-secondary); margin-top: 2px;" data-i18n="settings.subtitle">统一管理语言本地化、外观主题、采样频率、HF 模型库与 SSH 连接</div>
+              </div>
+              <button class="cmd-btn primary" id="btn-save-preferences" style="padding: 6px 16px;" data-i18n="settings.save_btn">💾 保存所有设置</button>
+            </div>
+
+            <!-- Grid 1: Language & Appearance -->
+            <div class="perf-grid-2">
+              <div class="perf-card">
+                <div class="perf-card-title" data-i18n="settings.lang_title">🌐 界面显示语言 (Language)</div>
+                <div style="margin-top: 8px;">
+                  <label style="font-size: 12px; color: var(--win-text-secondary); margin-bottom: 4px; display: block;" data-i18n="settings.lang_label">选择当前客户端语言 / Select Language</label>
+                  <select id="setting-lang-select" style="width: 100%; background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 8px 12px; font-size: 12px; cursor: pointer;">
+                    <option value="zh-CN">🇨🇳 简体中文 (Simplified Chinese)</option>
+                    <option value="en-US">🇺🇸 English (United States)</option>
+                  </select>
+                  <div style="font-size: 11px; color: var(--win-text-muted); margin-top: 6px;" data-i18n="settings.lang_note">支持即时免刷新多语言切换，覆盖全控制台所有功能模块。</div>
+                </div>
+              </div>
+
+              <div class="perf-card">
+                <div class="perf-card-title" data-i18n="settings.theme_title">🎨 主题与视觉样式</div>
+                <div style="margin-top: 8px;">
+                  <label style="font-size: 12px; color: var(--win-text-secondary); margin-bottom: 4px; display: block;" data-i18n="settings.theme_label">色彩模式</label>
+                  <select id="setting-theme-select" style="width: 100%; background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 8px 12px; font-size: 12px; cursor: pointer;">
+                    <option value="dark">🌙 深色模式 (Dark Theme - Fluent Dark)</option>
+                    <option value="light">☀️ 浅色模式 (Light Theme - Fluent Light)</option>
+                  </select>
+                  <div style="font-size: 11px; color: var(--win-text-muted); margin-top: 6px;" data-i18n="settings.theme_note">Windows 11 Fluent 亚克力磨砂玻璃质感与 HSL 精校调色盘。</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Grid 2: Polling & Alarm Threshold -->
+            <div class="perf-grid-2">
+              <div class="perf-card">
+                <div class="perf-card-title" data-i18n="settings.perf_title">⏱️ 实时监控轮询刷新周期</div>
+                <div style="margin-top: 8px;">
+                  <label style="font-size: 12px; color: var(--win-text-secondary); margin-bottom: 4px; display: block;" data-i18n="settings.perf_label">数据更新频率</label>
+                  <select id="setting-poll-interval" style="width: 100%; background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 8px 12px; font-size: 12px; cursor: pointer;">
+                    <option value="1000">⚡ 1.0 秒 (超高频极速采样)</option>
+                    <option value="2500" selected>🚀 2.5 秒 (标准推荐平衡)</option>
+                    <option value="5000">🍃 5.0 秒 (节能与低网络开销)</option>
+                  </select>
+                  <div style="font-size: 11px; color: var(--win-text-muted); margin-top: 6px;" data-i18n="settings.perf_note">控制风扇、温度历史曲线及系统硬件仪表盘的自动拉取周期。</div>
+                </div>
+              </div>
+
+              <div class="perf-card">
+                <div class="perf-card-title" data-i18n="settings.alarm_title">🚨 硬件温控警戒阈值</div>
+                <div style="margin-top: 8px;">
+                  <label style="font-size: 12px; color: var(--win-text-secondary); margin-bottom: 4px; display: block;" data-i18n="settings.alarm_label">警戒线温度 (°C)</label>
+                  <select id="setting-temp-alarm" style="width: 100%; background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 8px 12px; font-size: 12px; cursor: pointer;">
+                    <option value="75">75 °C (保守保护)</option>
+                    <option value="80" selected>80 °C (标准推荐警戒线)</option>
+                    <option value="85">85 °C (高性能允许)</option>
+                    <option value="90">90 °C (极端阈值)</option>
+                  </select>
+                  <div style="font-size: 11px; color: var(--win-text-muted); margin-top: 6px;" data-i18n="settings.alarm_note">图表中的警戒参考线将动态吸附到该温度设定。</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Grid 3: Hugging Face & Model Storage -->
+            <div class="perf-card">
+              <div class="perf-card-title" data-i18n="settings.hf_title">🤗 Hugging Face Hub 全局偏好与镜像</div>
+              <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 10px;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;" data-i18n="settings.hf_mirror">
+                  <input type="checkbox" id="setting-hf-mirror"> ⚡ 默认启用国内高速镜像源 (hf-mirror.com)
+                </label>
+                <div class="win-form-group" style="margin: 0;">
+                  <label data-i18n="settings.hf_token_label">Hugging Face 官方 Access Token (用于下载受限模型)</label>
+                  <input type="password" id="setting-hf-token" placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
+                </div>
+                <div class="win-form-group" style="margin: 0;">
+                  <label data-i18n="settings.hf_dir_label">默认本地模型下载与存储目录 (Target Directory)</label>
+                  <input type="text" id="setting-hf-dir" value="/mnt/models">
+                </div>
+              </div>
+            </div>
+
+            <!-- Grid 4: SSH Server Connection -->
+            <div class="perf-card">
+              <div class="perf-card-title" data-i18n="settings.ssh_title">🔐 多服务器与 SSH 连接</div>
+              <div class="server-profiles-toolbar">
+                <div>
+                  <strong>已保存服务器</strong>
+                  <span>可从窗口顶部快速切换；凭据仅保存在当前管理机。</span>
+                </div>
+                <button type="button" class="cmd-btn btn-sm" id="btn-new-server-profile">＋ 新建档案</button>
+              </div>
+              <div id="server-profiles-list" class="server-profiles-list">
+                <div class="server-profile-empty">正在加载服务器档案...</div>
+              </div>
+              <form id="settings-form" style="margin-top: 12px; display: flex; flex-direction: column; gap: 10px;">
+                <input type="hidden" id="setting-profile-id">
+                <div class="win-form-group" style="margin: 0;">
+                  <label>档案名称</label>
+                  <input type="text" id="setting-profile-name" maxlength="64" placeholder="例如：生产 GPU 主机">
+                </div>
+                <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 12px;">
+                  <div class="win-form-group" style="margin: 0;">
+                    <label data-i18n="settings.ssh_host_label">目标主机 IP 地址 (Host)</label>
+                    <input type="text" id="setting-host" value="192.168.1.128" required>
+                  </div>
+                  <div class="win-form-group" style="margin: 0;">
+                    <label data-i18n="settings.ssh_port_label">SSH 服务端口 (Port)</label>
+                    <input type="number" id="setting-port" value="22" required>
+                  </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                  <div class="win-form-group" style="margin: 0;">
+                    <label data-i18n="settings.ssh_user_label">登录用户名 (Username)</label>
+                    <input type="text" id="setting-username" value="root" required>
+                  </div>
+                  <div class="win-form-group" style="margin: 0;">
+                    <label data-i18n="settings.ssh_auth_label">身份认证方式 (Authentication)</label>
+                    <select id="setting-auth-type">
+                      <option value="password">密码认证 (Password)</option>
+                      <option value="key">SSH 私钥认证 (Private Key)</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="win-form-group" id="group-password" style="margin: 0;">
+                  <label data-i18n="settings.ssh_pwd_label">登录密码 (Password)</label>
+                  <input type="password" id="setting-password" placeholder="输入服务器 root 或用户密码">
+                </div>
+                <div class="win-form-group" id="group-key" style="display: none; margin: 0;">
+                  <label data-i18n="settings.ssh_key_label">私钥文本 (id_rsa / id_ed25519)</label>
+                  <textarea id="setting-key" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----..."></textarea>
+                  <input type="password" id="setting-passphrase" style="margin-top: 4px;" placeholder="私钥口令 (可选)">
+                </div>
+                <label class="credential-persist-option" for="setting-remember">
+                  <input type="checkbox" id="setting-remember">
+                  <span data-i18n="settings.ssh_remember">在这台管理机上保存 SSH 凭据（未勾选时仅保留到本次进程结束）</span>
+                </label>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--win-border);">
+                  <button type="button" class="cmd-btn" id="btn-test-connection" data-i18n="settings.ssh_test_btn">测试连接</button>
+                  <button type="submit" class="cmd-btn primary" id="btn-save-connect" data-i18n="settings.ssh_connect_btn">建立 SSH 会话</button>
+                </div>
+              </form>
+            </div>
+
+          </div>
+        </div>
+
+      </main>
+    </div>
+
+    <!-- Windows 11 Bottom Status Bar -->
+    <footer class="win-statusbar" aria-label="服务器状态" aria-live="polite">
+      <div class="status-left">
+        <span id="statusbar-conn-status">● 已就绪</span>
+        <span id="statusbar-host">主机: 尚未配置</span>
+        <span id="statusbar-uptime">开机时长: --</span>
+      </div>
+      <div class="status-right">
+        <span id="statusbar-cpu">CPU: --%</span>
+        <span id="statusbar-ram">RAM: --%</span>
+        <span id="statusbar-net">Net: ↓ 0 KB/s ↑ 0 KB/s</span>
+        <span>UTF-8 | SSH2</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Loaded from fragments/modals.html before app initialization -->
+  <div id="modal-root"></div>
+
+  <!-- Toast notifications -->
+  <div id="toast-container" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- External libraries -->
+
+  <!-- App scripts -->
+  <script src="js/bootstrap.js"></script>
+  <script src="js/pathHelper.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/i18n.js" type="module"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/dashboard.js"></script>
+  <script src="js/terminal.js"></script>
+  <script src="js/docker.js"></script>
+  <script src="js/files.js"></script>
+  <script src="js/services.js"></script>
+  <script src="js/scripts.js"></script>
+  <script src="js/markdown.js"></script>
+  <script src="js/llm.js"></script>
+  <script src="js/fan.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,450 @@
+<!-- MODALS -->
+  <!-- File Editor Modal -->
+  <div class="modal-backdrop" id="modal-editor">
+    <div class="modal-dialog large">
+      <div class="modal-header-bar">
+        <span>📝 记事本 - <span id="editor-filename" style="font-family: var(--font-mono); font-size: 11px; color: var(--win-accent-light);"></span></span>
+        <button class="cmd-btn" data-close="modal-editor">&times;</button>
+      </div>
+      <div class="modal-body-content">
+        <textarea id="editor-textarea" class="win-code-editor" spellcheck="false"></textarea>
+      </div>
+      <div class="modal-footer-bar">
+        <button class="cmd-btn" data-close="modal-editor">取消</button>
+        <button class="cmd-btn primary" id="btn-editor-save">保存更改 (Ctrl+S)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Docker Logs Modal -->
+  <div class="modal-backdrop" id="modal-docker-logs">
+    <div class="modal-dialog large">
+      <div class="modal-header-bar">
+        <span>📜 容器运行日志 - <span id="docker-logs-name" style="font-family: var(--font-mono); color: var(--win-accent-light);"></span></span>
+        <button class="cmd-btn" data-close="modal-docker-logs">&times;</button>
+      </div>
+      <div class="modal-body-content">
+        <div class="win-code-editor" id="docker-logs-content" style="height: 420px; overflow-y: auto; color: #38bdf8;">加载中...</div>
+      </div>
+      <div class="modal-footer-bar">
+        <button class="cmd-btn" id="btn-refresh-logs">刷新日志</button>
+        <button class="cmd-btn primary" data-close="modal-docker-logs">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pull Image Modal -->
+  <div class="modal-backdrop" id="modal-pull-image">
+    <div class="modal-dialog">
+      <div class="modal-header-bar">
+        <span>拉取 Docker 镜像</span>
+        <button class="cmd-btn" data-close="modal-pull-image">&times;</button>
+      </div>
+      <div class="modal-body-content">
+        <div class="win-form-group">
+          <label>镜像名称 (如 redis:alpine, ubuntu:22.04)</label>
+          <input type="text" id="pull-image-name" placeholder="例如: nginx:alpine">
+        </div>
+      </div>
+      <div class="modal-footer-bar">
+        <button class="cmd-btn" data-close="modal-pull-image">取消</button>
+        <button class="cmd-btn primary" id="btn-confirm-pull">拉取</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- New File/Folder Modal -->
+  <div class="modal-backdrop" id="modal-new-item">
+    <div class="modal-dialog">
+      <div class="modal-header-bar">
+        <span id="new-item-title">新建项目</span>
+        <button class="cmd-btn" data-close="modal-new-item">&times;</button>
+      </div>
+      <div class="modal-body-content">
+        <div class="win-form-group">
+          <label id="new-item-label">名称</label>
+          <input type="text" id="new-item-name" placeholder="请输入名称">
+        </div>
+      </div>
+      <div class="modal-footer-bar">
+        <button class="cmd-btn" data-close="modal-new-item">取消</button>
+        <button class="cmd-btn primary" id="btn-confirm-new-item">确认创建</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Compress Modal -->
+  <div class="modal-backdrop" id="modal-compress">
+    <div class="modal-dialog">
+      <div class="modal-header-bar">
+        <span>📦 压缩文件 / 文件夹</span>
+        <button class="cmd-btn" data-close="modal-compress">&times;</button>
+      </div>
+      <div class="modal-body-content">
+        <div class="win-form-group">
+          <label>压缩包格式</label>
+          <select id="compress-format">
+            <option value="tar.gz">.tar.gz (Linux 高压缩率推荐)</option>
+            <option value="zip">.zip (跨平台 Windows 兼容)</option>
+          </select>
+        </div>
+        <div class="win-form-group">
+          <label>压缩包输出文件名</label>
+          <input type="text" id="compress-output-name" placeholder="例如: backup.tar.gz">
+        </div>
+      </div>
+      <div class="modal-footer-bar">
+        <button class="cmd-btn" data-close="modal-compress">取消</button>
+        <button class="cmd-btn primary" id="btn-confirm-compress">开始压缩</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chmod (Permissions) Modal -->
+  <div class="modal-backdrop" id="modal-chmod">
+    <div class="modal-dialog">
+      <div class="modal-header-bar">
+        <span>🔒 修改权限 (Chmod) - <span id="chmod-target-path" style="font-family: var(--font-mono); font-size: 11px; color: var(--win-accent);"></span></span>
+        <button class="cmd-btn" data-close="modal-chmod">&times;</button>
+      </div>
+      <div class="modal-body-content">
+        <div class="perm-matrix">
+          <div class="perm-box">
+            <div class="perm-title">所有者 (Owner)</div>
+            <label class="perm-check-item"><input type="checkbox" id="perm-ur" checked> 读取 (r - 4)</label>
+            <label class="perm-check-item"><input type="checkbox" id="perm-uw" checked> 写入 (w - 2)</label>
+            <label class="perm-check-item"><input type="checkbox" id="perm-ux" checked> 执行 (x - 1)</label>
+          </div>
+          <div class="perm-box">
+            <div class="perm-title">用户组 (Group)</div>
+            <label class="perm-check-item"><input type="checkbox" id="perm-gr" checked> 读取 (r - 4)</label>
+            <label class="perm-check-item"><input type="checkbox" id="perm-gw"> 写入 (w - 2)</label>
+            <label class="perm-check-item"><input type="checkbox" id="perm-gx" checked> 执行 (x - 1)</label>
+          </div>
+          <div class="perm-box">
+            <div class="perm-title">其他人 (Others)</div>
+            <label class="perm-check-item"><input type="checkbox" id="perm-or" checked> 读取 (r - 4)</label>
+            <label class="perm-check-item"><input type="checkbox" id="perm-ow"> 写入 (w - 2)</label>
+            <label class="perm-check-item"><input type="checkbox" id="perm-ox" checked> 执行 (x - 1)</label>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 10px;">
+          <div class="win-form-group" style="margin: 0; width: 140px;">
+            <label>八进制权限代码</label>
+            <input type="text" id="chmod-octal-input" value="0755" style="font-family: var(--font-mono); font-weight: 600;">
+          </div>
+          <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer;">
+            <input type="checkbox" id="chmod-recursive-check"> 递归应用到所有子文件和子目录 (-R)
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer-bar">
+        <button class="cmd-btn" data-close="modal-chmod">取消</button>
+        <button class="cmd-btn primary" id="btn-confirm-chmod">应用权限</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- File Properties Modal -->
+  <div class="modal-backdrop" id="modal-properties">
+    <div class="modal-dialog">
+      <div class="modal-header-bar">
+        <span>ℹ️ 文件 / 目录属性</span>
+        <button class="cmd-btn" data-close="modal-properties">&times;</button>
+      </div>
+      <div class="modal-body-content">
+        <div class="win-prop-row"><span class="prop-name">完整路径</span><span class="prop-val" id="prop-path" style="word-break: break-all;">--</span></div>
+        <div class="win-prop-row"><span class="prop-name">占用磁盘空间</span><span class="prop-val" id="prop-size">--</span></div>
+        <div class="win-prop-row"><span class="prop-name">所有者与所属组</span><span class="prop-val" id="prop-owner">--</span></div>
+        <div class="win-prop-row"><span class="prop-name">权限代码</span><span class="prop-val" id="prop-perm">--</span></div>
+        <div class="win-prop-row"><span class="prop-name">最近修改时间</span><span class="prop-val" id="prop-modify">--</span></div>
+      </div>
+      <div class="modal-footer-bar">
+        <button class="cmd-btn primary" data-close="modal-properties">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Image Preview Modal -->
+  <div class="modal-backdrop" id="modal-image-preview">
+    <div class="modal-dialog large">
+      <div class="modal-header-bar">
+        <span>🖼️ 图片预览 - <span id="image-preview-title" style="font-family: var(--font-mono); font-size: 11px; color: var(--win-accent);"></span></span>
+        <button class="cmd-btn" data-close="modal-image-preview">&times;</button>
+      </div>
+      <div class="modal-body-content" style="text-align: center; background-color: var(--win-address-bg); padding: 20px;">
+        <img id="image-preview-element" src="" style="max-width: 100%; max-height: 65vh; object-fit: contain; border-radius: var(--radius-win); box-shadow: 0 4px 12px rgba(0,0,0,0.2);" alt="预览">
+      </div>
+      <div class="modal-footer-bar">
+        <button class="cmd-btn primary" data-close="modal-image-preview">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right-Click Context Menu -->
+  <div class="win-context-menu" id="file-context-menu" role="menu" aria-label="文件操作">
+    <div class="context-menu-item" role="menuitem" tabindex="-1" data-action="open-file-editor"><span style="width: 16px;">📝</span> 打开 / 编辑</div>
+    <div class="context-menu-item" role="menuitem" tabindex="-1" data-action="download-file"><span style="width: 16px;">⬇️</span> 下载</div>
+    <div class="context-menu-sep"></div>
+    <div class="context-menu-item" role="menuitem" tabindex="-1" data-action="copy-selection" data-cut="false"><span style="width: 16px;">📋</span> 复制 (Copy)</div>
+    <div class="context-menu-item" role="menuitem" tabindex="-1" data-action="copy-selection" data-cut="true"><span style="width: 16px;">✂️</span> 剪切 (Cut)</div>
+    <div class="context-menu-item" role="menuitem" tabindex="-1" id="ctx-item-paste" data-action="paste-clipboard"><span style="width: 16px;">📋</span> 粘贴到当前目录</div>
+    <div class="context-menu-sep"></div>
+    <div class="context-menu-item" role="menuitem" tabindex="-1" data-action="batch-compress"><span style="width: 16px;">📦</span> 压缩为归档...</div>
+    <div class="context-menu-item" role="menuitem" tabindex="-1" id="ctx-item-extract" style="display: none;" data-action="extract-archive"><span style="width: 16px;">📂</span> 解压到此处</div>
+    <div class="context-menu-item" role="menuitem" tabindex="-1" data-action="show-chmod"><span style="width: 16px;">🔒</span> 修改权限 (Chmod)...</div>
+    <div class="context-menu-item" role="menuitem" tabindex="-1" data-action="show-properties"><span style="width: 16px;">ℹ️</span> 查看属性...</div>
+    <div class="context-menu-item" role="menuitem" tabindex="-1" data-action="rename-item"><span style="width: 16px;">🏷️</span> 重命名...</div>
+    <div class="context-menu-sep"></div>
+    <div class="context-menu-item danger" role="menuitem" tabindex="-1" data-action="delete-item"><span style="width: 16px;">🗑️</span> 删除</div>
+  </div>
+
+  <!-- Remote Trash Modal -->
+  <div class="modal-backdrop" id="modal-file-trash">
+    <div class="modal-dialog large">
+      <div class="modal-header-bar">
+        <span>🗑️ 远程回收站</span>
+        <button class="cmd-btn" data-close="modal-file-trash">&times;</button>
+      </div>
+      <div class="modal-body-content">
+        <div class="trash-summary-row">
+          <span id="trash-location-label">正在读取远程回收站...</span>
+          <button class="cmd-btn btn-sm danger" id="btn-empty-trash">清空回收站</button>
+        </div>
+        <div class="win-table-box" style="max-height: 420px; overflow: auto;">
+          <table class="win-table">
+            <thead>
+              <tr><th>名称</th><th>原路径</th><th style="width: 150px;">删除时间</th><th style="width: 150px;">操作</th></tr>
+            </thead>
+            <tbody id="trash-items-body">
+              <tr><td colspan="4" style="text-align:center;">正在加载...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer-bar">
+        <button class="cmd-btn primary" data-close="modal-file-trash">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Start LLM Service Modal -->
+  <div class="modal-backdrop" id="modal-start-llm">
+    <div class="modal-dialog">
+      <div class="modal-header-bar">
+        <span>🚀 启动大模型推理服务 (llama-server)</span>
+        <button class="cmd-btn" data-close="modal-start-llm">&times;</button>
+      </div>
+      <div class="modal-body-content">
+        <div class="llm-preset-row">
+          <div class="win-form-group" style="margin: 0; flex: 1;">
+            <label>启动参数预设</label>
+            <select id="start-model-preset">
+              <option value="balanced">均衡模式 · 32K / Q8 / 单并发</option>
+              <option value="low-vram">低显存模式 · 16K / Q4 / 单并发</option>
+              <option value="long-context">长上下文模式 · 128K / Q4</option>
+              <option value="throughput">高吞吐模式 · 32K / Q8 / 四并发</option>
+              <option value="custom">自定义 / 上次使用</option>
+            </select>
+          </div>
+          <div class="llm-preset-hint">切换预设后仍可逐项微调，成功启动时自动记住参数。</div>
+        </div>
+        <div class="win-form-group">
+          <label>模型来源 (Source)</label>
+          <select id="start-model-source">
+            <option value="hf">HuggingFace Hub Repo ID (自动按需下载/缓存)</option>
+            <option value="file">本地 GGUF 模型文件路径</option>
+          </select>
+        </div>
+        <div class="win-form-group">
+          <label>模型路径 / Repo ID (例如: ggml-org/gpt-oss-20b-GGUF)</label>
+          <input type="text" id="start-model-path" value="ggml-org/gpt-oss-20b-GGUF">
+        </div>
+        <div class="win-form-group">
+          <label>模型别名 (Alias)</label>
+          <input type="text" id="start-model-alias" value="gpt-oss-20b" placeholder="如 gpt-oss-20b">
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div class="win-form-group">
+            <label>GPU 卸载层数 (-ngl)</label>
+            <input type="number" id="start-model-ngl" value="999">
+          </div>
+          <div class="win-form-group">
+            <label>上下文长度 (-c Context)</label>
+            <input type="number" id="start-model-ctx" value="131072">
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div class="win-form-group">
+            <label>KV 缓存 K 量化 (-ctk)</label>
+            <select id="start-model-ctk">
+              <option value="q8_0" selected>q8_0 (节省显存推荐)</option>
+              <option value="q4_0">q4_0 (极致显存节省)</option>
+              <option value="f16">f16 (原始精度)</option>
+            </select>
+          </div>
+          <div class="win-form-group">
+            <label>KV 缓存 V 量化 (-ctv)</label>
+            <select id="start-model-ctv">
+              <option value="q8_0" selected>q8_0 (节省显存推荐)</option>
+              <option value="q4_0">q4_0 (极致显存节省)</option>
+              <option value="f16">f16 (原始精度)</option>
+            </select>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div class="win-form-group">
+            <label>CPU 线程数 (-t，留空自动)</label>
+            <input type="number" id="start-model-threads" min="1" max="256" placeholder="自动">
+          </div>
+          <div class="win-form-group">
+            <label>并发 Slot 数 (-np)</label>
+            <input type="number" id="start-model-parallel" min="1" max="64" value="1">
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div class="win-form-group">
+            <label>服务端口 (Port)</label>
+            <input type="number" id="start-model-port" value="8080">
+          </div>
+          <div class="win-form-group" style="justify-content: center;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin-top: 14px;">
+              <input type="checkbox" id="start-model-fa" checked> 启用 Flash Attention (-fa)
+            </label>
+          </div>
+        </div>
+        <div class="llm-memory-estimate" id="llm-memory-estimate" data-model-bytes="0">
+          <strong>显存预估：</strong><span id="llm-memory-estimate-value">等待本地模型大小信息</span>
+          <div>估算包含模型权重、KV Cache 与运行缓冲区，仅供启动前规划；实际占用受模型架构和后端影响。</div>
+        </div>
+      </div>
+      <div class="modal-footer-bar">
+        <button class="cmd-btn" data-close="modal-start-llm">取消</button>
+        <button class="cmd-btn primary" id="btn-confirm-start-llm">确认启动</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- LLM Logs Modal -->
+  <div class="modal-backdrop" id="modal-llm-logs">
+    <div class="modal-dialog large">
+      <div class="modal-header-bar">
+        <span>📋 llama-server 运行控制台日志</span>
+        <button class="cmd-btn" data-close="modal-llm-logs">&times;</button>
+      </div>
+      <div class="modal-body-content">
+        <div class="win-code-editor" id="llm-logs-content" style="height: 420px; overflow-y: auto; color: #a3e635;">正在拉取日志...</div>
+      </div>
+      <div class="modal-footer-bar">
+        <button class="cmd-btn" id="btn-refresh-llm-logs">刷新日志</button>
+        <button class="cmd-btn primary" data-close="modal-llm-logs">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fan Logs Modal -->
+  <div class="modal-backdrop" id="modal-fan-logs">
+    <div class="modal-dialog large">
+      <div class="modal-header-bar">
+        <span>📋 mi50-fan-control 动态温控服务日志</span>
+        <button class="cmd-btn" data-close="modal-fan-logs">&times;</button>
+      </div>
+      <div class="modal-body-content">
+        <div class="win-code-editor" id="fan-logs-content" style="height: 420px; overflow-y: auto; color: #38bdf8;">正在拉取日志...</div>
+      </div>
+      <div class="modal-footer-bar">
+        <button class="cmd-btn" id="btn-refresh-fan-logs">刷新日志</button>
+        <button class="cmd-btn primary" data-close="modal-fan-logs">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hugging Face Model Files & Quantization Explorer Modal -->
+  <div class="modal-backdrop" id="modal-hf-files">
+    <div class="modal-dialog large" style="max-width: 920px;">
+      <div class="modal-header-bar">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span>🤗 Hugging Face 模型详情 - <span id="hf-modal-repo-name" style="font-family: var(--font-mono); font-size: 12px; color: var(--win-accent);"></span></span>
+          <a id="hf-modal-repo-link" href="#" target="_blank" style="font-size: 11px; color: var(--win-accent); text-decoration: underline;">[在网页打开 ↗]</a>
+        </div>
+        <button class="cmd-btn" data-close="modal-hf-files">&times;</button>
+      </div>
+
+      <!-- Modal Sub-Navigation Bar -->
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 14px; background: var(--win-toolbar); border-bottom: 1px solid var(--win-border);">
+        <div style="display: flex; gap: 6px;">
+          <button class="hf-tag-btn hf-modal-tab-btn active" data-tab="files">📦 GGUF 量化文件列表与显存预估</button>
+          <button class="hf-tag-btn hf-modal-tab-btn" data-tab="readme">📖 模型官方 README 说明文档</button>
+        </div>
+        <input type="text" id="hf-modal-file-filter" placeholder="🔍 快速过滤版本 (如 q4, q8, fp16)..." style="background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 3px 8px; font-size: 11px; width: 200px;">
+      </div>
+
+      <div class="modal-body-content" style="padding: 10px 14px;">
+        <!-- Pane 1: Files List -->
+        <div id="hf-modal-files-pane" style="max-height: 480px; overflow-y: auto;">
+          <div id="hf-model-files-list"></div>
+        </div>
+
+        <!-- Pane 2: Readme Markdown Preview -->
+        <div id="hf-modal-readme-pane" style="display: none; max-height: 480px; overflow-y: auto;"></div>
+      </div>
+
+      <div class="modal-footer-bar">
+        <button class="cmd-btn primary" data-close="modal-hf-files">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Login Modal -->
+  <div class="modal-backdrop" id="modal-login" data-modal-static style="z-index: 9999;">
+    <div class="modal-dialog" style="max-width: 400px;">
+      <div class="modal-header-bar">
+        <span>🔒 管理后台身份认证</span>
+      </div>
+      <form id="login-form">
+        <div class="modal-body-content" style="padding: 16px 20px;">
+          <div id="login-error-msg" style="color: var(--perf-red); font-size: 12px; margin-bottom: 12px; display: none;"></div>
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label style="display: block; font-size: 12px; margin-bottom: 4px;">管理员账号</label>
+            <input type="text" id="login-username" class="win-input" value="admin" required autocomplete="username">
+          </div>
+          <div class="form-group" style="margin-bottom: 8px;">
+            <label style="display: block; font-size: 12px; margin-bottom: 4px;">登录密码</label>
+            <input type="password" id="login-password" class="win-input" placeholder="输入密码" required autocomplete="current-password">
+          </div>
+        </div>
+        <div class="modal-footer-bar">
+          <button type="submit" class="cmd-btn primary" style="width: 100%;">登 录</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Initial Password Setup Modal -->
+  <div class="modal-backdrop" id="modal-setup" data-modal-static style="z-index: 9999;">
+    <div class="modal-dialog" style="max-width: 420px;">
+      <div class="modal-header-bar">
+        <span>🛡️ 首次运行安全初始化</span>
+      </div>
+      <form id="setup-form">
+        <div class="modal-body-content" style="padding: 16px 20px;">
+          <div style="font-size: 12px; color: var(--win-text-secondary); margin-bottom: 12px; line-height: 1.5;">
+            首次启动管理系统，请为 <strong>admin</strong> 管理员设定访问密码。
+          </div>
+          <div id="setup-error-msg" style="color: var(--perf-red); font-size: 12px; margin-bottom: 12px; display: none;"></div>
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label style="display: block; font-size: 12px; margin-bottom: 4px;">设置管理员密码（至少 12 位）</label>
+            <input type="password" id="setup-password" class="win-input" placeholder="请输入至少 12 位密码" minlength="12" required autocomplete="new-password">
+          </div>
+          <div class="form-group" style="margin-bottom: 8px;">
+            <label style="display: block; font-size: 12px; margin-bottom: 4px;">确认管理员密码</label>
+            <input type="password" id="setup-password-confirm" class="win-input" placeholder="请再次输入密码" minlength="12" required autocomplete="new-password">
+          </div>
+        </div>
+        <div class="modal-footer-bar">
+          <button type="submit" class="cmd-btn primary" style="width: 100%;">完成初始化并进入系统</button>
+        </div>
+      </form>
+    </div>
+  </div>

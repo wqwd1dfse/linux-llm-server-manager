@@ -1,0 +1,123 @@
+/* Windows 11 Fluent Theme (Complete Dark & Light Compatibility) */
+
+:root, [data-theme="dark"] {
+  --win-bg: #202020;
+  --win-surface: #2b2b2b;
+  --win-surface-alt: #323232;
+  --win-sidebar: #262626;
+  --win-toolbar: #2d2d2d;
+  --win-address-bg: #1c1c1c;
+  --win-card: #2d2d2d;
+  --win-card-border: #383838;
+  --win-border: #383838;
+  --win-hover: #383838;
+  --win-selected: #04395e;
+  --win-accent: #0078d4;
+  --win-accent-hover: #1084d8;
+  --win-accent-light: #60cdff;
+
+  --win-text-primary: #ffffff;
+  --win-text-secondary: #cccccc;
+  --win-text-muted: #8a8a8a;
+
+  --win-status-bg: #0078d4;
+  --win-status-text: #ffffff;
+
+  --win-badge-bg: #383838;
+  --win-badge-text: #60cdff;
+
+  --perf-green: #4ec9b0;
+  --perf-blue: #0078d4;
+  --perf-red: #f14c4c;
+  --perf-yellow: #cca700;
+
+  /* Aliases for legacy component variables */
+  --text-primary: #ffffff;
+  --text-bright: #ffffff;
+  --text-main: #cccccc;
+  --text-secondary: #a6a6a6;
+  --text-muted: #8a8a8a;
+  --bg-main: #202020;
+  --border: #383838;
+
+  --link-color: #60cdff;
+  --link-hover: #93d5ff;
+
+  --font-win: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Roboto, "Microsoft YaHei", "PingFang SC", sans-serif;
+  --font-mono: "Cascadia Code", "Consolas", "Courier New", monospace;
+
+  --radius-win: 4px;
+  --radius-lg: 8px;
+
+  /* Animation & Shadow tokens */
+  --trans-fast: 0.15s ease;
+  --shadow-win: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --win-menu-bg: #2d2d2d;
+}
+
+[data-theme="light"] {
+  --win-bg: #f3f3f3;
+  --win-surface: #ffffff;
+  --win-surface-alt: #f9f9f9;
+  --win-sidebar: #f8f9fa;
+  --win-toolbar: #f9f9f9;
+  --win-address-bg: #ffffff;
+  --win-card: #ffffff;
+  --win-card-border: #dcdcdc;
+  --win-border: #e0e0e0;
+  --win-hover: #eaeaea;
+  --win-selected: #cce8ff;
+  --win-accent: #0067c0;
+  --win-accent-hover: #005a9e;
+  --win-accent-light: #0067c0;
+
+  --win-text-primary: #111827;
+  --win-text-secondary: #374151;
+  --win-text-muted: #6b7280;
+
+  --win-status-bg: #0067c0;
+  --win-status-text: #ffffff;
+
+  --win-badge-bg: #e5f1fb;
+  --win-badge-text: #0067c0;
+
+  --perf-green: #107c41;
+  --perf-blue: #0067c0;
+  --perf-red: #d83b01;
+  --perf-yellow: #a46d00;
+
+  /* Aliases for legacy component variables */
+  --text-primary: #111827;
+  --text-bright: #000000;
+  --text-main: #1f2937;
+  --text-secondary: #4b5563;
+  --text-muted: #6b7280;
+  --bg-main: #f9fafb;
+  --border: #e5e7eb;
+
+  --link-color: #0067c0;
+  --link-hover: #004c8c;
+
+  /* Animation & Shadow tokens */
+  --trans-fast: 0.15s ease;
+  --shadow-win: 0 4px 16px rgba(0, 0, 0, 0.12);
+  --win-menu-bg: #ffffff;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  user-select: none;
+}
+
+body {
+  font-family: var(--font-win);
+  font-size: 12px;
+  background-color: var(--win-bg);
+  color: var(--win-text-primary);
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
