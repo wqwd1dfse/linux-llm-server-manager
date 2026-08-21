@@ -263,8 +263,10 @@ router.get('/status', async (req, res) => {
         gpu: {
           name: `${primaryGpu.name || 'GPU'} 板载风扇`,
           rpm: gpuRpm,
-          pwmPercent: primaryGpu.fanPwmPct !== undefined ? primaryGpu.fanPwmPct : gpuPwmPercent,
-          rawPwm: primaryGpu.fanPwm !== undefined ? primaryGpu.fanPwm : gpuRawPwm,
+          // Prefer this request's direct hwmon sample. GPU discovery is cached for
+          // hardware metadata and can otherwise leave the fan readout several seconds behind.
+          pwmPercent: gpuPwmPercent !== null ? gpuPwmPercent : (primaryGpu.fanPwmPct ?? null),
+          rawPwm: gpuRawPwm !== null ? gpuRawPwm : (primaryGpu.fanPwm ?? null),
           maxRpm: 4950,
           status: gpuRpm !== null || gpuPwmPercent !== null ? 'available' : 'unavailable'
         },

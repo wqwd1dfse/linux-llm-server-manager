@@ -108,7 +108,9 @@ test('Frontend naming: hardware-specific labels stay out of visible copy', () =>
   assert.match(fanRoute, /FAN_SERVICE_NAMES = \['fan-control', 'mi50-fan-control'\]/);
   assert.match(fanRoute, /target = requestedTarget === 'p12' \? 'fan'/);
   assert.match(fanRoute, /\n        fan: \{/);
+  assert.match(fanRoute, /pwmPercent: gpuPwmPercent !== null \? gpuPwmPercent/);
   assert.doesNotMatch(fanClient, /fans\.p12|p12Rpm/);
+  assert.match(fanClient, /requestSequence !== fanStatusRequestSequence/);
   assert.match(fanService, /ExecStart=\/usr\/local\/sbin\/fan-control\.sh/);
   assert.match(fanInstaller, /systemctl enable --now fan-control\.service/);
 });

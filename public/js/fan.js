@@ -7,6 +7,7 @@ let currentFanHistoryRange = '5m';
 let fanHistoryPoints = [];
 let fanHoverIndex = -1;
 let activePresetMode = 'auto';
+let fanStatusRequestSequence = 0;
 
 window.initFan = function () {
   loadFanStatus(false);
@@ -33,8 +34,11 @@ window.initFan = function () {
 // 1. Status & Metrics Pull (Truthful Sensor Reporting)
 // ----------------------------------------------------
 async function loadFanStatus(showToast = false) {
+  const requestSequence = ++fanStatusRequestSequence;
   try {
     const res = await window.api.request('/api/fan/status');
+    // A slower earlier SSH request must not overwrite a newer sensor snapshot.
+    if (requestSequence !== fanStatusRequestSequence) return;
     const d = res.data;
     if (!d) return;
 
@@ -139,6 +143,7 @@ async function loadFanStatus(showToast = false) {
     }
 
   } catch (err) {
+    if (requestSequence !== fanStatusRequestSequence) return;
     if (showToast) console.error('Failed to load fan status:', err);
   }
 }
