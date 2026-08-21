@@ -41,26 +41,30 @@ async function loadFanStatus(showToast = false) {
     // Service status badge
     const sBadge = document.getElementById('fan-service-badge');
     if (sBadge && d.service) {
-      sBadge.innerText = d.service.isActive ? fanText('● 自动温控运行中', '● Automatic thermal control active') : fanText('○ 手动转速接管', '○ Manual fan control');
-      sBadge.style.color = d.service.isActive ? 'var(--perf-green)' : 'var(--perf-yellow)';
-      if (d.service.isActive) {
-        activePresetMode = 'auto';
+      if (d.service.installed === false) {
+        sBadge.innerText = fanText('● Linux 端需安装 Fan 服务', '● Install Fan service on Linux');
+        sBadge.style.color = 'var(--perf-red)';
+        activePresetMode = null;
+      } else {
+        sBadge.innerText = d.service.isActive ? fanText('● 自动温控运行中', '● Automatic thermal control active') : fanText('○ 手动转速接管', '○ Manual fan control');
+        sBadge.style.color = d.service.isActive ? 'var(--perf-green)' : 'var(--perf-yellow)';
+        if (d.service.isActive) activePresetMode = 'auto';
       }
       updatePresetButtonsUI(activePresetMode);
     }
 
     // Top Header Big Readout
-    if (d.fans?.p12) {
-      const p12RpmText = d.fans.p12.rpm !== null ? `${(d.fans.p12.rpm).toLocaleString()} RPM` : fanText('N/A (传感器离线)', 'N/A (sensor offline)');
-      setText('fan-p12-rpm', p12RpmText);
+    if (d.fans?.fan) {
+      const fanRpmText = d.fans.fan.rpm !== null ? `${(d.fans.fan.rpm).toLocaleString()} RPM` : fanText('N/A (传感器离线)', 'N/A (sensor offline)');
+      setText('fan-main-rpm', fanRpmText);
 
       const cpuTempStr = d.temperatures?.cpu?.package !== null ? `${d.temperatures.cpu.package}°C` : 'N/A';
       const cpuPwmStr = d.fans.cpu?.pwmPercent !== null ? `${d.fans.cpu.pwmPercent}%` : 'N/A';
       setText('fan-cpu-status', fanText(`CPU 风扇: ${cpuPwmStr} PWM | 封装温度: ${cpuTempStr}`, `CPU fan: ${cpuPwmStr} PWM | package: ${cpuTempStr}`));
 
       // Fan Matrix Readouts
-      setText('fan-p12-pwm', d.fans.p12.pwmPercent !== null ? `${d.fans.p12.pwmPercent}% (${d.fans.p12.rawPwm}/255)` : 'N/A');
-      setProgressBar('fan-p12-progress', d.fans.p12.pwmPercent !== null ? d.fans.p12.pwmPercent : 0);
+      setText('fan-main-pwm', d.fans.fan.pwmPercent !== null ? `${d.fans.fan.pwmPercent}% (${d.fans.fan.rawPwm}/255)` : 'N/A');
+      setProgressBar('fan-main-progress', d.fans.fan.pwmPercent !== null ? d.fans.fan.pwmPercent : 0);
 
       setText('fan-cpu-pwm', d.fans.cpu.pwmPercent !== null ? `${d.fans.cpu.pwmPercent}% (${d.fans.cpu.rawPwm}/255)` : 'N/A');
       setText('fan-cpu-rpm', d.fans.cpu.rpm !== null && d.fans.cpu.rpm > 0 ? `${d.fans.cpu.rpm} RPM` : (d.fans.cpu.rpm === 0 ? '0 RPM' : fanText('PWM 智能调速', 'Smart PWM control')));
@@ -222,7 +226,7 @@ window.applyAllFans = async function () {
   window.toast('正在应用全机风扇设定...', 'info');
   updatePresetButtonsUI(null);
 
-  const p12 = parseInt(document.getElementById('slider-fan-p12')?.value || '80', 10);
+  const fan = parseInt(document.getElementById('slider-fan-main')?.value || '80', 10);
   const cpu = parseInt(document.getElementById('slider-fan-cpu')?.value || '70', 10);
   const gpu = parseInt(document.getElementById('slider-fan-gpu')?.value || '65', 10);
   const aux = parseInt(document.getElementById('slider-fan-aux')?.value || '65', 10);
@@ -231,7 +235,7 @@ window.applyAllFans = async function () {
     const res = await window.api.request('/api/fan/manual', {
       method: 'POST',
       body: JSON.stringify({
-        fans: { p12, cpu, gpu, aux }
+        fans: { fan, cpu, gpu, aux }
       })
     });
     window.toast(res.message || '已成功应用风扇设定', 'success');
@@ -242,7 +246,7 @@ window.applyAllFans = async function () {
 };
 
 function setupFanSliders() {
-  bindSlider('slider-fan-p12', 'val-fan-p12');
+  bindSlider('slider-fan-main', 'val-fan-main');
   bindSlider('slider-fan-cpu', 'val-fan-cpu');
   bindSlider('slider-fan-gpu', 'val-fan-gpu');
   bindSlider('slider-fan-aux', 'val-fan-aux');
@@ -321,14 +325,14 @@ async function loadFanHistory(range = '5m', showToast = false) {
       setText('chart-legend-gpuj', latest.gpuJ !== null ? `${latest.gpuJ}°C` : '--');
       setText('chart-legend-gpue', latest.gpuE !== null ? `${latest.gpuE}°C` : '--');
       setText('chart-legend-gpup', latest.gpuP !== null ? `${latest.gpuP}W` : '--');
-      setText('chart-legend-p12', latest.p12Rpm !== null ? `${latest.p12Rpm.toLocaleString()} RPM` : '--');
+      setText('chart-legend-fan', latest.fanRpm !== null ? `${latest.fanRpm.toLocaleString()} RPM` : '--');
     }
 
     if (stats) {
       if (stats.cpu) setText('stat-cpu-summary', stats.cpu.min !== null ? `最小: ${stats.cpu.min}°C | 均值: ${stats.cpu.avg}°C | 最大: ${stats.cpu.max}°C` : 'N/A');
       if (stats.gpuJunction) setText('stat-gpuj-summary', stats.gpuJunction.min !== null ? `最小: ${stats.gpuJunction.min}°C | 均值: ${stats.gpuJunction.avg}°C | 最大: ${stats.gpuJunction.max}°C` : 'N/A');
       if (stats.gpuPower) setText('stat-gpup-summary', stats.gpuPower.min !== null ? `最小: ${stats.gpuPower.min}W | 均值: ${stats.gpuPower.avg}W | 最大: ${stats.gpuPower.max}W` : 'N/A');
-      if (stats.p12Rpm) setText('stat-p12-summary', stats.p12Rpm.current !== null ? `当前: ${(stats.p12Rpm.current).toLocaleString()} RPM | 均值: ${(stats.p12Rpm.avg).toLocaleString()} RPM` : 'N/A');
+      if (stats.fanRpm) setText('stat-fan-summary', stats.fanRpm.current !== null ? `当前: ${(stats.fanRpm.current).toLocaleString()} RPM | 均值: ${(stats.fanRpm.avg).toLocaleString()} RPM` : 'N/A');
     }
 
     drawFanHistoryCanvas();

@@ -92,6 +92,27 @@ test('Frontend performance: feature scripts are loaded on demand', () => {
   assert.match(app, /await loadFeatureScript\(src\)/);
 });
 
+test('Frontend naming: hardware-specific labels stay out of visible copy', () => {
+  const visibleMarkup = `${shellHtml}\n${modalHtml}`
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<[^>]+>/g, ' ');
+  const catalog = read('public/js/i18nCatalog.js');
+  const fanRoute = read('server/routes/fan.js');
+  const fanClient = read('public/js/fan.js');
+  const fanService = read('linux/fan-control/fan-control.service');
+  const fanInstaller = read('linux/fan-control/install.sh');
+
+  assert.doesNotMatch(visibleMarkup, /\b(?:P12|MI50)\b/i);
+  assert.doesNotMatch(catalog, /\b(?:P12|MI50)\b/i);
+  assert.match(fanRoute, /name: 'Fan 外置风扇'/);
+  assert.match(fanRoute, /FAN_SERVICE_NAMES = \['fan-control', 'mi50-fan-control'\]/);
+  assert.match(fanRoute, /target = requestedTarget === 'p12' \? 'fan'/);
+  assert.match(fanRoute, /\n        fan: \{/);
+  assert.doesNotMatch(fanClient, /fans\.p12|p12Rpm/);
+  assert.match(fanService, /ExecStart=\/usr\/local\/sbin\/fan-control\.sh/);
+  assert.match(fanInstaller, /systemctl enable --now fan-control\.service/);
+});
+
 test('Internationalization: English defaults and language switching preserve nested controls', () => {
   const i18n = read('public/js/i18n.js');
   const catalog = read('public/js/i18nCatalog.js');

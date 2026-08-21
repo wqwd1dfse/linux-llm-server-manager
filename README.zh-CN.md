@@ -33,7 +33,7 @@
 
 ## ✨ 核心特性
 
-- 📊 **真实硬件遥测与多卡监控 (Hardware Telemetry)**: 采集 CPU 负载、多核占用、RAM 与 Swap、磁盘 I/O 及分区容量、网络吞吐、多显卡（AMD Instinct MI50 / NVIDIA / Intel）温度/功耗/显存占用。无传感器时真实上报 `null`，拒绝模拟假数据。
+- 📊 **真实硬件遥测与多卡监控 (Hardware Telemetry)**: 采集 CPU 负载、多核占用、RAM 与 Swap、磁盘 I/O 及分区容量、网络吞吐、多 GPU（AMD / NVIDIA / Intel）温度、功耗与显存占用。无传感器时真实上报 `null`，拒绝模拟假数据。
 - 💻 **安全交互终端 (Web SSH Terminal)**: 集成 `xterm.js`，支持全功能 Bash/Zsh 交互、ANSI 真彩色、自动尺寸自适应、严格的 WebSocket Origin 与统一 Session 升级认证。
 - 📁 **完整 SFTP 文件管理器 (SFTP Explorer)**: 目录导航、按服务器隔离的收藏路径、可恢复远程回收站、大文件分片/拖拽上传（单文件 512MB 限制、超限 413、临时文件自动清理）、下载、代码与配置文件在线编辑、权限 Chmod、Tar/Zip 压缩解压、图片即时预览。
 - 🤖 **大模型工作室与云端下载器 (LLM Studio)**: 严格参数校验（NGL、Context、KV Cache Type 白名单、端口 1-65535、路径边界隔离），动态跟踪 `llama-server` 实例端口，多轮 SSE 流式对话；在线浏览 Hugging Face 开源模型库，一键下载到 `.part` 临时文件，校验成功后原子入库。HF Token 仅持久化在管理端权限为 0600 的配置文件中；远程下载使用临时 0600 curl 配置并在任务结束时删除，不会出现在进程命令行。
@@ -140,6 +140,17 @@ http://127.0.0.1:3888
 
 ---
 
+## 🐧 Linux 端 Fan 温控服务（可选）
+
+Dashboard 无需额外守护进程即可读取硬件传感器；自动温控曲线、服务启停和服务日志功能需要在每台目标 Linux 主机上另外下载并安装 fan-control.service。
+
+在目标 Linux 主机上执行：
+
+    git clone --depth 1 https://github.com/wqwd1dfse/linux-llm-server-manager.git
+    cd linux-llm-server-manager/linux/fan-control
+    sudo ./install.sh
+
+无人值守运行前请检查 /etc/default/fan-control。不同主板与 GPU 的 hwmon PWM 节点可能不同，详细配置和回滚方法见 linux/fan-control/README.md。
 ## 🧩 前端结构
 
 - `public/index.html`：应用外壳与主要业务视图。

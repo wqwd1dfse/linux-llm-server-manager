@@ -85,8 +85,9 @@ if not gpus:
                     break
 
             card_name = card_name.replace('Advanced Micro Devices, Inc.', '').strip()
-            if 'MI50' in desc or 'Vega 20' in desc or 'Pro VII' in desc:
-                card_name = 'AMD Radeon Instinct MI50 32GB'
+            is_known_32gb_gpu = 'MI50' in desc or 'Vega 20' in desc or 'Pro VII' in desc
+            if is_known_32gb_gpu:
+                card_name = 'AMD GPU 32GB'
                 vendor = 'AMD'
 
             temp_edge = None
@@ -122,8 +123,8 @@ if not gpus:
                 except Exception:
                     pass
 
-            vram_total = '32.0 GB' if 'MI50' in card_name else '未知'
-            vram_total_bytes = 32 * 1024 * 1024 * 1024 if 'MI50' in card_name else 0
+            vram_total = '32.0 GB' if is_known_32gb_gpu else '未知'
+            vram_total_bytes = 32 * 1024 * 1024 * 1024 if is_known_32gb_gpu else 0
             vram_used = '--'
 
             vram_used_file = os.path.join(device_link, 'mem_info_vram_used')

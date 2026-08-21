@@ -43,7 +43,7 @@ test('Executor: Systemd action whitelist validation', () => {
 
 test('Executor: Service name validation', () => {
   assert.equal(validateServiceName('nginx'), 'nginx.service');
-  assert.equal(validateServiceName('mi50-fan-control.service'), 'mi50-fan-control.service');
+  assert.equal(validateServiceName('fan-control.service'), 'fan-control.service');
   assert.equal(validateServiceName('docker@1'), 'docker@1.service');
 
   assert.throws(() => validateServiceName('nginx; reboot'), /非法服务名称/);

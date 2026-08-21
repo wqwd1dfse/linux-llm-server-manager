@@ -510,7 +510,7 @@
                   </div>
                   <div class="win-prop-row"><span class="prop-name">已加载模型</span><span class="prop-val" id="llm-active-model-name" style="font-size: 11px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">--</span></div>
                   <div class="win-prop-row"><span class="prop-name">OpenAI 兼容接口</span><span class="prop-val" id="llm-active-port">等待服务启动</span></div>
-                  <div class="win-prop-row"><span class="prop-name">计算后端 (GPU)</span><span class="prop-val" style="color: var(--perf-green);">AMD Instinct MI50 (ROCm)</span></div>
+                  <div class="win-prop-row"><span class="prop-name">计算后端 (GPU)</span><span class="prop-val" style="color: var(--perf-green);">GPU (ROCm)</span></div>
                   <div class="win-prop-row"><span class="prop-name">运行时间</span><span class="prop-val" id="llm-active-uptime">--</span></div>
                   <div class="win-prop-row"><span class="prop-name">启动参数</span><span class="prop-val" id="llm-active-params">--</span></div>
                   <div class="win-prop-row"><span class="prop-name">进程资源</span><span class="prop-val" id="llm-active-resources">--</span></div>
@@ -726,8 +726,8 @@
         <div class="view-panel" id="view-fan">
           <div class="perf-header">
             <div>
-              <div style="font-size: 12px; color: var(--win-text-secondary);">P12 高压涡轮风扇实时转速</div>
-              <div class="perf-title-big" id="fan-p12-rpm">-- RPM</div>
+              <div style="font-size: 12px; color: var(--win-text-secondary);">Fan 实时转速</div>
+              <div class="perf-title-big" id="fan-main-rpm">-- RPM</div>
               <div style="font-size: 11px; color: var(--win-text-secondary); margin-top: 2px;" id="fan-cpu-status">CPU 风扇: --% PWM | 封装: --°C</div>
             </div>
             <div style="text-align: right;">
@@ -781,8 +781,8 @@
                 </button>
                 <div style="display: flex; align-items: center; gap: 4px; padding: 2px 6px;">
                   <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background-color: #10b981;"></span>
-                  <span style="color: var(--win-text-secondary);">P12 涡轮:</span>
-                  <strong id="chart-legend-p12" style="font-family: var(--font-mono); color: #10b981;">-- RPM</strong>
+                  <span style="color: var(--win-text-secondary);">Fan:</span>
+                  <strong id="chart-legend-fan" style="font-family: var(--font-mono); color: #10b981;">-- RPM</strong>
                 </div>
               </div>
             </div>
@@ -808,8 +808,8 @@
                 <span style="font-size: 11px; font-family: var(--font-mono); margin-top: 2px;" id="stat-gpup-summary">最小: --W | 平均: --W | 最大: --W</span>
               </div>
               <div class="sensor-chip" style="flex-direction: column; align-items: flex-start; padding: 6px 10px;">
-                <span class="sensor-chip-name" style="color: #10b981;">🌪️ P12 风扇转速</span>
-                <span style="font-size: 11px; font-family: var(--font-mono); margin-top: 2px;" id="stat-p12-summary">当前: -- RPM | 均值: -- RPM</span>
+                <span class="sensor-chip-name" style="color: #10b981;">🌪️ Fan 转速</span>
+                <span style="font-size: 11px; font-family: var(--font-mono); margin-top: 2px;" id="stat-fan-summary">当前: -- RPM | 均值: -- RPM</span>
               </div>
             </div>
           </div>
@@ -822,14 +822,14 @@
                 <div class="perf-card-title">🌪️ 全机风扇转速与实时 PWM 占空比</div>
 
                 <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 8px;">
-                  <!-- P12 Fan -->
+                  <!-- External Fan -->
                   <div>
                     <div class="win-prop-row">
-                      <span class="prop-name">1. P12 暴力涡轮外置风扇 (MI50 专用)</span>
-                      <span class="prop-val" id="fan-p12-pwm">--%</span>
+                      <span class="prop-name">1. Fan 外置风扇</span>
+                      <span class="prop-val" id="fan-main-pwm">--%</span>
                     </div>
                     <div class="win-progress" style="margin-top: 3px;">
-                      <div class="win-progress-bar green" id="fan-p12-progress" style="width: 0%;"></div>
+                      <div class="win-progress-bar green" id="fan-main-progress" style="width: 0%;"></div>
                     </div>
                   </div>
 
@@ -847,7 +847,7 @@
                   <!-- GPU Fan -->
                   <div>
                     <div class="win-prop-row">
-                      <span class="prop-name">3. MI50 加速卡板载内部风扇</span>
+                      <span class="prop-name">3. GPU 板载风扇</span>
                       <span class="prop-val"><span id="fan-gpu-rpm" style="margin-right: 6px; color: var(--win-text-secondary); font-size: 11px;">--</span><span id="fan-gpu-pwm" style="font-weight: 600;">--%</span></span>
                     </div>
                     <div class="win-progress" style="margin-top: 3px;">
@@ -895,15 +895,15 @@
                 <div class="perf-card-title" data-i18n="fan.sliders_title">🎛️ 多路风扇独立手动 PWM 调速</div>
 
                 <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 10px;">
-                  <!-- P12 Slider -->
+                  <!-- External Fan Slider -->
                   <div>
                     <div class="win-prop-row">
-                      <span class="prop-name">P12 外置风机</span>
-                      <span class="prop-val" id="val-fan-p12">80%</span>
+                      <span class="prop-name">Fan 外置风扇</span>
+                      <span class="prop-val" id="val-fan-main">80%</span>
                     </div>
                     <div class="fan-slider-row">
-                      <input type="range" id="slider-fan-p12" min="20" max="100" step="5" value="80">
-                      <button class="cmd-btn btn-sm" id="btn-apply-fan-p12" data-action="apply-single-fan" data-channel="p12" data-slider="slider-fan-p12">应用</button>
+                      <input type="range" id="slider-fan-main" min="20" max="100" step="5" value="80">
+                      <button class="cmd-btn btn-sm" id="btn-apply-fan-main" data-action="apply-single-fan" data-channel="fan" data-slider="slider-fan-main">应用</button>
                     </div>
                   </div>
 

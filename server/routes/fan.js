@@ -5,6 +5,28 @@ import { detectGpus } from '../gpuDetector.js';
 
 const router = Router();
 
+const FAN_SERVICE_NAMES = ['fan-control', 'mi50-fan-control'];
+
+async function findInstalledFanService() {
+  for (const serviceName of FAN_SERVICE_NAMES) {
+    const result = await executeCommand(
+      'systemctl',
+      ['show', serviceName, '--property=LoadState', '--value'],
+      { timeoutMs: 4000 }
+    );
+    if (result.success && result.stdout.trim() === 'loaded') return serviceName;
+  }
+  return null;
+}
+
+function sendMissingFanService(res) {
+  return res.status(503).json({
+    success: false,
+    status: 'service_not_installed',
+    error: '目标 Linux 主机未安装 fan-control.service。请从项目 linux/fan-control 目录下载并安装。'
+  });
+}
+
 // Shell helper to query comprehensive fan speeds, PWMs, and real hardware temperatures
 const FULL_FAN_SENSORS_SCRIPT = `
 GPU_HWMON=""
@@ -51,8 +73,8 @@ echo "---NCT_FANS---"
 if [ -n "$NCT_HWMON" ]; then
   echo "CPU_FAN_PWM:$(cat $NCT_HWMON/pwm1 2>/dev/null || echo '')"
   echo "CPU_FAN_RPM:$(cat $NCT_HWMON/fan1_input 2>/dev/null || echo '')"
-  echo "P12_PWM:$(cat $NCT_HWMON/pwm2 2>/dev/null || echo '')"
-  echo "P12_RPM:$(cat $NCT_HWMON/fan2_input 2>/dev/null || echo '')"
+  echo "FAN_PWM:$(cat $NCT_HWMON/pwm2 2>/dev/null || echo '')"
+  echo "FAN_RPM:$(cat $NCT_HWMON/fan2_input 2>/dev/null || echo '')"
   echo "AUX_FAN_PWM:$(cat $NCT_HWMON/pwm3 2>/dev/null || echo '')"
   echo "AUX_FAN_RPM:$(cat $NCT_HWMON/fan3_input 2>/dev/null || echo '')"
   echo "SYS_TEMP:$(cat $NCT_HWMON/temp1_input 2>/dev/null || echo '')"
@@ -92,7 +114,16 @@ for d in /dev/sd[a-z]; do
 done
 
 echo "---SERVICE---"
-systemctl is-active mi50-fan-control 2>/dev/null || echo "inactive"
+if systemctl cat fan-control.service >/dev/null 2>&1; then
+  echo "INSTALLED:1"
+  echo "STATE:$(systemctl is-active fan-control.service 2>/dev/null || echo inactive)"
+elif systemctl cat mi50-fan-control.service >/dev/null 2>&1; then
+  echo "INSTALLED:1"
+  echo "STATE:$(systemctl is-active mi50-fan-control.service 2>/dev/null || echo inactive)"
+else
+  echo "INSTALLED:0"
+  echo "STATE:not-installed"
+fi
 `;
 
 function parseMilliTemp(rawVal) {
@@ -154,9 +185,9 @@ router.get('/status', async (req, res) => {
     const gpuRpm = parseIntOrNull(gpuMap['GPU_RPM']);
     const gpuPowerW = gpuMap['GPU_POWER'] ? (parseInt(gpuMap['GPU_POWER'], 10) / 1000000).toFixed(1) : null;
 
-    const p12RawPwm = parseIntOrNull(nctMap['P12_PWM']);
-    const p12PwmPercent = p12RawPwm !== null ? Math.round((p12RawPwm / 255) * 100) : null;
-    const p12Rpm = parseIntOrNull(nctMap['P12_RPM']);
+    const fanRawPwm = parseIntOrNull(nctMap['FAN_PWM']);
+    const fanPwmPercent = fanRawPwm !== null ? Math.round((fanRawPwm / 255) * 100) : null;
+    const fanRpm = parseIntOrNull(nctMap['FAN_RPM']);
 
     const cpuFanRawPwm = parseIntOrNull(nctMap['CPU_FAN_PWM']);
     const cpuFanPwmPercent = cpuFanRawPwm !== null ? Math.round((cpuFanRawPwm / 255) * 100) : null;
@@ -191,17 +222,19 @@ router.get('/status', async (req, res) => {
       disksList.push({ name: diskName, temp: !isNaN(t) && t > 0 ? t : null });
     }
 
-    const serviceLines = sections['SERVICE'] || [];
-    const serviceActive = serviceLines.includes('active');
+    const serviceMap = parsePairs(sections['SERVICE']);
+    const serviceInstalled = serviceMap['INSTALLED'] === '1';
+    const serviceActive = serviceMap['STATE'] === 'active';
 
     const gpuInfo = await detectGpus();
     const primaryGpu = gpuInfo.primary || {};
 
     const statusData = {
       service: {
-        name: 'mi50-fan-control',
+        name: 'fan-control',
+        installed: serviceInstalled,
         isActive: serviceActive,
-        statusText: serviceActive ? '自动温控中 (Active)' : '已暂停 (Manual Override)'
+        statusText: !serviceInstalled ? '未安装 (Not Installed)' : serviceActive ? '自动温控中 (Active)' : '已暂停 (Manual Override)'
       },
       gpuInfo: {
         count: gpuInfo.count,
@@ -211,13 +244,13 @@ router.get('/status', async (req, res) => {
         cards: gpuInfo.gpus
       },
       fans: {
-        p12: {
-          name: 'P12 暴力外置涡轮风扇 (加速卡专用)',
-          rpm: p12Rpm,
-          pwmPercent: p12PwmPercent,
-          rawPwm: p12RawPwm,
+        fan: {
+          name: 'Fan 外置风扇',
+          rpm: fanRpm,
+          pwmPercent: fanPwmPercent,
+          rawPwm: fanRawPwm,
           maxRpm: 4950,
-          status: p12Rpm !== null ? 'available' : 'unavailable'
+          status: fanRpm !== null ? 'available' : 'unavailable'
         },
         cpu: {
           name: 'CPU 处理器散热风扇',
@@ -295,9 +328,11 @@ router.get('/history', (req, res) => {
 
 // 3. Fail-Safe Closed-Loop Manual PWM Control
 router.post('/manual', async (req, res) => {
-  const { target = 'all', percent = 80, fans } = req.body;
+  const { target: requestedTarget = 'all', percent = 80, fans } = req.body;
+  // Backward-compatible input alias; all responses use the generic fan field.
+  const target = requestedTarget === 'p12' ? 'fan' : requestedTarget;
 
-  const validTargets = ['all', 'p12', 'cpu', 'gpu', 'aux'];
+  const validTargets = ['all', 'fan', 'cpu', 'gpu', 'aux'];
   if (!validTargets.includes(target)) {
     return res.status(400).json({ success: false, error: `无效的风扇控制目标: ${target}` });
   }
@@ -308,19 +343,20 @@ router.post('/manual', async (req, res) => {
     return Math.max(0, Math.min(100, num));
   };
 
-  let p12Pct = clampPercent(percent);
-  let cpuPct = p12Pct;
-  let gpuPct = p12Pct;
-  let auxPct = p12Pct;
+  let fanPct = clampPercent(percent);
+  let cpuPct = fanPct;
+  let gpuPct = fanPct;
+  let auxPct = fanPct;
 
   if (fans && typeof fans === 'object') {
-    if (typeof fans.p12 !== 'undefined') p12Pct = clampPercent(fans.p12);
+    if (typeof fans.fan !== 'undefined') fanPct = clampPercent(fans.fan);
+    else if (typeof fans.p12 !== 'undefined') fanPct = clampPercent(fans.p12);
     if (typeof fans.cpu !== 'undefined') cpuPct = clampPercent(fans.cpu);
     if (typeof fans.gpu !== 'undefined') gpuPct = clampPercent(fans.gpu);
     if (typeof fans.aux !== 'undefined') auxPct = clampPercent(fans.aux);
   }
 
-  const p12Raw = Math.round((p12Pct * 255) / 100);
+  const fanRaw = Math.round((fanPct * 255) / 100);
   const cpuRaw = Math.round((cpuPct * 255) / 100);
   const gpuRaw = Math.round((gpuPct * 255) / 100);
   const auxRaw = Math.round((auxPct * 255) / 100);
@@ -351,18 +387,18 @@ router.post('/manual', async (req, res) => {
       exit 0
     fi
 
-    systemctl stop mi50-fan-control 2>/dev/null || true
+    systemctl stop fan-control 2>/dev/null || systemctl stop mi50-fan-control 2>/dev/null || true
 
     WRITE_COUNT=0
     READBACK_MISMATCH=0
 
-    # 1. P12 Fan (pwm2)
-    if [ -n "$NCT" ] && [ -f "$NCT/pwm2" ] && { [ "${target}" = "p12" ] || [ "${target}" = "all" ] || [ -n "${fans ? '1' : ''}" ]; }; then
+    # 1. External fan (pwm2)
+    if [ -n "$NCT" ] && [ -f "$NCT/pwm2" ] && { [ "${target}" = "fan" ] || [ "${target}" = "all" ] || [ -n "${fans ? '1' : ''}" ]; }; then
       [ -f "$NCT/pwm2_enable" ] && echo 1 > "$NCT/pwm2_enable" 2>/dev/null || true
-      echo ${p12Raw} > "$NCT/pwm2" 2>/dev/null
-      READ_P12="$(cat "$NCT/pwm2" 2>/dev/null || echo -1)"
+      echo ${fanRaw} > "$NCT/pwm2" 2>/dev/null
+      READ_FAN="$(cat "$NCT/pwm2" 2>/dev/null || echo -1)"
       WRITE_COUNT=$((WRITE_COUNT+1))
-      DIFF=$((READ_P12 - ${p12Raw}))
+      DIFF=$((READ_FAN - ${fanRaw}))
       [ $DIFF -lt 0 ] && DIFF=$(( -DIFF ))
       [ $DIFF -gt 2 ] && READBACK_MISMATCH=$((READBACK_MISMATCH+1))
     fi
@@ -396,8 +432,8 @@ router.post('/manual', async (req, res) => {
 
     if [ $READBACK_MISMATCH -gt 0 ]; then
       # Fail-Safe Auto Recovery
-      systemctl restart mi50-fan-control 2>/dev/null || systemctl start mi50-fan-control 2>/dev/null || true
-      RECOVERED="$(systemctl is-active mi50-fan-control 2>/dev/null || echo inactive)"
+      systemctl restart fan-control 2>/dev/null || systemctl restart mi50-fan-control 2>/dev/null || true
+      RECOVERED="$(systemctl is-active fan-control 2>/dev/null || systemctl is-active mi50-fan-control 2>/dev/null || echo inactive)"
       echo "STATUS:READBACK_MISMATCH:RECOVERED=$RECOVERED"
       exit 0
     fi
@@ -439,8 +475,11 @@ router.post('/manual', async (req, res) => {
     // Attempt recovery on unexpected execution fault
     let failsafeActive = false;
     try {
-      const recRes = await executeCommand('systemctl', ['restart', 'mi50-fan-control'], { timeoutMs: 5000 });
-      failsafeActive = recRes.success;
+      const serviceName = await findInstalledFanService();
+      if (serviceName) {
+        const recRes = await executeCommand('systemctl', ['restart', serviceName], { timeoutMs: 5000 });
+        failsafeActive = recRes.success;
+      }
     } catch (_) {}
 
     res.status(500).json({
@@ -464,7 +503,10 @@ const handlePresetMode = async (req, res) => {
     }
 
     if (mode === 'auto') {
-      await executeCommand('systemctl', ['restart', 'mi50-fan-control'], { timeoutMs: 5000 }).catch(() => {});
+      const serviceName = await findInstalledFanService();
+      if (!serviceName) return sendMissingFanService(res);
+      const serviceResult = await executeCommand('systemctl', ['restart', serviceName], { timeoutMs: 5000 });
+      if (!serviceResult.success) throw new Error(serviceResult.stderr || 'fan-control.service 启动失败');
 
       const autoHwScript = `
         for h in /sys/class/hwmon/hwmon*; do
@@ -494,7 +536,7 @@ const handlePresetMode = async (req, res) => {
     const pwmVal = mode === 'full' ? 255 : mode === 'quiet' ? 105 : 178;
 
     const script = `
-      systemctl stop mi50-fan-control 2>/dev/null || true
+      systemctl stop fan-control 2>/dev/null || systemctl stop mi50-fan-control 2>/dev/null || true
 
       for h in /sys/class/hwmon/hwmon*; do
         [ -r "$h/name" ] || continue
@@ -540,7 +582,10 @@ const handlePresetMode = async (req, res) => {
       output: result.stdout
     });
   } catch (err) {
-    try { await executeCommand('systemctl', ['start', 'mi50-fan-control'], { timeoutMs: 5000 }); } catch (_) {}
+    try {
+      const serviceName = await findInstalledFanService();
+      if (serviceName) await executeCommand('systemctl', ['start', serviceName], { timeoutMs: 5000 });
+    } catch (_) {}
     res.status(500).json({ success: false, error: err.message });
   }
 };
@@ -556,8 +601,14 @@ router.post('/service', async (req, res) => {
       return res.status(400).json({ success: false, error: '非法操作，仅支持 start/stop/restart' });
     }
 
-    const result = await executeCommand('systemctl', [action, 'mi50-fan-control'], { timeoutMs: 8000 });
-    res.json({ success: true, message: `服务 mi50-fan-control 已执行 ${action}`, output: result.stdout || result.stderr });
+    const serviceName = await findInstalledFanService();
+    if (!serviceName) return sendMissingFanService(res);
+
+    const result = await executeCommand('systemctl', [action, serviceName], { timeoutMs: 8000 });
+    if (!result.success) {
+      return res.status(500).json({ success: false, error: result.stderr || 'Fan 温控服务操作失败' });
+    }
+    res.json({ success: true, message: 'Fan 温控服务已执行 ' + action, output: result.stdout || result.stderr });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -566,7 +617,10 @@ router.post('/service', async (req, res) => {
 // 6. Get Service Logs
 router.get('/logs', async (req, res) => {
   try {
-    const result = await executeCommand('journalctl', ['-u', 'mi50-fan-control', '-n', '60', '--no-pager'], { timeoutMs: 5000 });
+    const serviceName = await findInstalledFanService();
+    if (!serviceName) return sendMissingFanService(res);
+
+    const result = await executeCommand('journalctl', ['-u', serviceName, '-n', '60', '--no-pager'], { timeoutMs: 5000 });
     res.json({ success: true, logs: result.stdout || '暂无日志记录' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

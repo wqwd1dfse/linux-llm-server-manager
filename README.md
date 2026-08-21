@@ -72,6 +72,17 @@ For development with Node.js watch mode:
 npm run dev
 ```
 
+## Optional Linux fan-control service
+
+The dashboard can read hardware sensors without an extra daemon. Automatic fan curves, service start/stop controls, and service logs additionally require fan-control.service on each target Linux host.
+
+Download and install it on the target host:
+
+    git clone --depth 1 https://github.com/wqwd1dfse/linux-llm-server-manager.git
+    cd linux-llm-server-manager/linux/fan-control
+    sudo ./install.sh
+
+Review /etc/default/fan-control before unattended use because hwmon PWM node layouts vary by motherboard and GPU. See linux/fan-control/README.md for configuration and rollback instructions.
 ## Configuration
 
 See [.env.example](.env.example) for every option. Common settings include:

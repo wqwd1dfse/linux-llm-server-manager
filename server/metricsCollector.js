@@ -97,7 +97,7 @@ class MetricsCollector {
         gpuJunction: calcStats(points, 'gpuJ'),
         gpuEdge: calcStats(points, 'gpuE'),
         gpuPower: calcStats(points, 'gpuP'),
-        p12Rpm: calcStats(points, 'p12Rpm')
+        fanRpm: calcStats(points, 'fanRpm')
       }
     };
   }
@@ -194,7 +194,7 @@ class MetricsCollector {
         gpuJ: primaryGpu?.temperature !== undefined ? primaryGpu.temperature : null,
         gpuE: primaryGpu?.tempEdge !== undefined ? primaryGpu.tempEdge : null,
         gpuP: primaryGpu?.powerDraw ? parseFloat(primaryGpu.powerDraw) || null : null,
-        p12Rpm: null, // Populated by fan status if queried
+        fanRpm: null, // Populated by fan status if queried
         cpuPwm: null
       });
 
@@ -501,10 +501,11 @@ class MetricsCollector {
         }
       }
 
-      let pciName = 'AMD Radeon Instinct MI50 / Vega 20';
+      let pciName = 'AMD GPU';
       if (pciLines.length > 0) {
         pciName = pciLines[0].replace(/^[0-9a-f:.]+\s+(VGA compatible controller|3D controller|Display controller):\s*/i, '').trim();
       }
+      if (/MI50|Vega 20|Pro VII/i.test(pciName)) pciName = 'AMD GPU';
 
       const vramPercent = vramTotal > 0 ? Math.round((vramUsed / vramTotal) * 100) : 0;
 

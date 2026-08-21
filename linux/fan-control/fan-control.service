@@ -1,0 +1,14 @@
+[Unit]
+Description=Generic GPU and external fan controller
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=simple
+Environment=FAN_CONTROL_CONFIG=/etc/default/fan-control
+ExecStart=/usr/local/sbin/fan-control.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
