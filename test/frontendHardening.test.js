@@ -44,10 +44,13 @@ test('Frontend architecture: modular styles and trusted modal fragment bootstrap
   const terminal = read('public/js/terminal.js');
   const markdown = read('public/js/markdown.js');
   const llm = read('public/js/llm.js');
+  const app = read('public/js/app.js');
 
   assert.match(styleEntry, /@import url\("base\.css"\)/);
   assert.match(styleEntry, /@import url\("components\.css"\)/);
   assert.match(styleEntry, /@import url\("polish\.css"\)/);
+  assert.ok(shellHtml.indexOf('css/base.css') < shellHtml.indexOf('css/components.css'));
+  assert.ok(shellHtml.indexOf('css/components.css') < shellHtml.indexOf('css/polish.css'));
   assert.match(shellHtml, /id="modal-root"/);
   assert.doesNotMatch(shellHtml, /id="modal-login"/);
   assert.match(modalHtml, /id="modal-login"/);
@@ -58,9 +61,35 @@ test('Frontend architecture: modular styles and trusted modal fragment bootstrap
   assert.doesNotMatch(shellHtml, /xterm(?:-addon-fit)?@/);
   assert.match(terminal, /ensureTerminalAssets/);
   assert.match(terminal, /XTERM_JS_URL/);
-  assert.ok(shellHtml.indexOf('js/markdown.js') < shellHtml.indexOf('js/llm.js'));
+  assert.ok(app.indexOf('js/markdown.js') < app.indexOf('js/llm.js'));
   assert.match(markdown, /window\.renderMarkdown/);
   assert.doesNotMatch(llm, /function renderMarkdown/);
+});
+
+test('Frontend performance: feature scripts are loaded on demand', () => {
+  const app = read('public/js/app.js');
+  const featureScripts = [
+    'settings.js',
+    'dashboard.js',
+    'terminal.js',
+    'docker.js',
+    'files.js',
+    'services.js',
+    'scripts.js',
+    'markdown.js',
+    'llm.js',
+    'fan.js'
+  ];
+
+  for (const script of featureScripts) {
+    const escapedScript = script.replace('.', '\\.');
+    assert.doesNotMatch(shellHtml, new RegExp(`<script[^>]+src="js/${escapedScript}`));
+    assert.match(app, new RegExp(`js/${escapedScript}`));
+  }
+
+  assert.match(app, /const featureBundles = Object\.freeze/);
+  assert.match(app, /loadingViews\.has\(initKey\)/);
+  assert.match(app, /await loadFeatureScript\(src\)/);
 });
 
 test('Internationalization: English defaults and language switching preserve nested controls', () => {

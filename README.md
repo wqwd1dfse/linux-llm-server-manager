@@ -110,14 +110,14 @@ Translation code is split between:
 
 ## Architecture
 
-The frontend uses native JavaScript and Express without a build step:
+The frontend uses native JavaScript and Express without a build step or extra runtime dependency. Feature scripts load only when their view is opened for the first time:
 
 - `public/index.html` — application shell and primary views.
 - `public/fragments/modals.html` — trusted modal and context-menu fragment.
 - `public/js/bootstrap.js` — validates and loads the fragment before application initialization.
 - `public/js/markdown.js` — escaped Markdown rendering.
 - `public/js/terminal.js` — lazily loads xterm.js.
-- `public/css/style.css` — imports base, component, and responsive/accessibility styles.
+- The browser loads `base.css`, `components.css`, and `polish.css` in parallel; `public/css/style.css` remains as a compatibility entry point.
 
 ## Tests
 

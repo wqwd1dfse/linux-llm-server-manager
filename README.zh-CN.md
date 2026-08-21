@@ -149,12 +149,12 @@ http://127.0.0.1:3888
 - `public/js/i18nCatalog.js`：集中维护英语和简体中文界面词条。
 - `public/js/markdown.js`：为 LLM 对话与模型说明提供统一的转义 Markdown 渲染。
 - `public/js/terminal.js`：首次进入终端时再加载 xterm.js；CDN 异常不会阻塞其他后台功能。
-- `public/css/style.css`：稳定样式入口，依次加载：
+- 浏览器会并行加载三份模块化样式；`public/css/style.css` 继续作为兼容入口，依次导入：
   - `base.css`：主题变量、字体与基础规则。
   - `components.css`：导航、卡片、表格、表单、弹窗和功能组件。
   - `polish.css`：视觉优化、响应式布局与可访问性增强。
 
-该拆分保留原生 JavaScript 和 Express 架构，不需要额外构建步骤。
+各功能脚本只在首次打开对应视图时加载，减少首屏下载与解析开销。该拆分保留原生 JavaScript 和 Express 架构，不需要额外构建步骤或运行时依赖。
 
 ---
 

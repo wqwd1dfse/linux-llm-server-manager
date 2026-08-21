@@ -3,7 +3,48 @@
 window.currentView = 'files';
 window.serverConnectionConfig = null;
 const initializedViews = new Set();
+const loadingViews = new Map();
 let serverProfiles = [];
+
+const featureBundles = Object.freeze({
+  files: { scripts: ['js/files.js'], initializer: 'initFiles' },
+  dashboard: { scripts: ['js/dashboard.js'], initializer: 'initDashboard' },
+  terminal: { scripts: ['js/terminal.js'], initializer: 'initTerminal' },
+  docker: { scripts: ['js/docker.js'], initializer: 'initDocker' },
+  services: { scripts: ['js/services.js'], initializer: 'initServices' },
+  scripts: { scripts: ['js/scripts.js'], initializer: 'initScripts' },
+  llm: { scripts: ['js/markdown.js', 'js/llm.js'], initializer: 'initLLM' },
+  fan: { scripts: ['js/fan.js'], initializer: 'initFan' },
+  settings: { scripts: ['js/settings.js'], initializer: 'initSettings' }
+});
+
+function loadFeatureScript(src) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[data-feature-src="${src}"]`);
+    if (existing?.dataset.loaded === 'true') {
+      resolve();
+      return;
+    }
+    if (existing) {
+      existing.addEventListener('load', resolve, { once: true });
+      existing.addEventListener('error', reject, { once: true });
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = src;
+    script.dataset.featureSrc = src;
+    script.addEventListener('load', () => {
+      script.dataset.loaded = 'true';
+      resolve();
+    }, { once: true });
+    script.addEventListener('error', () => {
+      script.remove();
+      reject(new Error(`Unable to load ${src}`));
+    }, { once: true });
+    document.head.appendChild(script);
+  });
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
   const fragmentsReady = await (window.uiFragmentsReady || Promise.resolve(true));
@@ -47,43 +88,38 @@ window.addEventListener('languagechange', () => {
 
   renderServerProfiles(window.serverConnectionConfig?.activeProfileId || null);
 });
-// Lazy View Initializer
+// Load and initialize feature code only when its view is opened.
 function lazyInitView(view) {
   const initKey = view.startsWith('monitor-') ? 'dashboard' : view;
-  if (initializedViews.has(initKey)) return;
+  if (initializedViews.has(initKey)) return Promise.resolve(true);
+  if (loadingViews.has(initKey)) return loadingViews.get(initKey);
 
-  switch (view) {
-    case 'files':
-      if (window.initFiles) { window.initFiles(); initializedViews.add('files'); }
-      break;
-    case 'monitor-cpu':
-    case 'monitor-gpu':
-    case 'monitor-ram':
-    case 'monitor-ssd':
-      if (window.initDashboard) { window.initDashboard(); initializedViews.add('dashboard'); }
-      break;
-    case 'terminal':
-      if (window.initTerminal) { window.initTerminal(); initializedViews.add('terminal'); }
-      break;
-    case 'docker':
-      if (window.initDocker) { window.initDocker(); initializedViews.add('docker'); }
-      break;
-    case 'services':
-      if (window.initServices) { window.initServices(); initializedViews.add('services'); }
-      break;
-    case 'scripts':
-      if (window.initScripts) { window.initScripts(); initializedViews.add('scripts'); }
-      break;
-    case 'llm':
-      if (window.initLLM) { window.initLLM(); initializedViews.add('llm'); }
-      break;
-    case 'fan':
-      if (window.initFan) { window.initFan(); initializedViews.add('fan'); }
-      break;
-    case 'settings':
-      if (window.initSettings) { window.initSettings(); initializedViews.add('settings'); }
-      break;
-  }
+  const bundle = featureBundles[initKey];
+  if (!bundle) return Promise.resolve(false);
+
+  const loading = (async () => {
+    for (const src of bundle.scripts) {
+      await loadFeatureScript(src);
+    }
+
+    const initialize = window[bundle.initializer];
+    if (typeof initialize !== 'function') {
+      throw new Error(`${bundle.initializer} is unavailable`);
+    }
+
+    await initialize();
+    initializedViews.add(initKey);
+    return true;
+  })().catch((error) => {
+    console.error(`[App] Unable to initialize ${initKey}:`, error);
+    window.toast?.('功能模块加载失败，请重试或刷新页面。', 'error');
+    return false;
+  }).finally(() => {
+    loadingViews.delete(initKey);
+  });
+
+  loadingViews.set(initKey, loading);
+  return loading;
 }
 
 // Theme Management
