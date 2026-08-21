@@ -21,8 +21,64 @@ import {
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS
 } from '../auth.js';
+import { validatePort } from '../executor.js';
 
 const router = Router();
+
+function sessionCookieOptions(req) {
+  return {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: req.secure === true,
+    path: '/',
+    maxAge: SESSION_TTL_MS,
+    priority: 'high'
+  };
+
+}
+function normalizeConnectionText(value, fallback, label, maxLength) {
+  const candidate = value === undefined || value === null || value === '' ? fallback : value;
+  if (typeof candidate !== 'string') throw new Error(`${label} 必须为字符串`);
+  const clean = candidate.trim();
+  if (!clean) throw new Error(`${label} 不能为空`);
+  if (clean.length > maxLength || /[\u0000-\u001f\u007f]/.test(clean)) {
+    throw new Error(`${label} 过长或包含非法控制字符`);
+  }
+  return clean;
+}
+
+function normalizeConnectionPort(value, fallback) {
+  const candidate = value === undefined || value === null || value === '' ? (fallback || 22) : value;
+  return validatePort(candidate);
+}
+
+function normalizeAuthType(value, fallback = 'password') {
+  const candidate = value === undefined || value === null || value === '' ? fallback : value;
+  if (!['password', 'key'].includes(candidate)) throw new Error('身份认证方式仅支持 password 或 key');
+  return candidate;
+}
+
+function normalizeOptionalSecret(value, label, maxBytes) {
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value !== 'string') throw new Error(`${label} 必须为字符串`);
+  if (value.includes('\0') || Buffer.byteLength(value, 'utf8') > maxBytes) {
+    throw new Error(`${label} 包含非法空字符或超过大小限制`);
+  }
+  return value;
+}
+
+function buildConnectionConfig(input, baseConfig) {
+  const password = normalizeOptionalSecret(input.password, 'SSH 密码', 4096) || baseConfig.password || '';
+  const privateKey = normalizeOptionalSecret(input.privateKey, 'SSH 私钥', 1024 * 1024) || baseConfig.privateKey || '';
+  const passphrase = normalizeOptionalSecret(input.passphrase, '私钥口令', 4096) || baseConfig.passphrase || '';
+  return {
+    host: normalizeConnectionText(input.host, baseConfig.host || '127.0.0.1', '主机地址', 255),
+    port: normalizeConnectionPort(input.port, baseConfig.port),
+    username: normalizeConnectionText(input.username, baseConfig.username || 'root', 'SSH 用户名', 64),
+    authType: normalizeAuthType(input.authType, baseConfig.authType),
+    password, privateKey, passphrase
+  };
+}
 
 function isLoopbackAddress(value) {
   const address = String(value || '').trim().replace(/^::ffff:/, '');
@@ -99,15 +155,7 @@ router.post('/setup', (req, res) => {
     // Auto-login upon setup
     const token = createSession({ username: username.trim() || 'admin' });
     const signed = signCookie(token);
-    const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
-
-    res.cookie(SESSION_COOKIE_NAME, signed, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: isSecure,
-      path: '/',
-      maxAge: SESSION_TTL_MS
-    });
+    res.cookie(SESSION_COOKIE_NAME, signed, sessionCookieOptions(req));
 
     res.json({
       success: true,
@@ -134,15 +182,7 @@ router.post('/login', (req, res) => {
   }
 
   const signed = signCookie(authResult.token);
-  const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
-
-  res.cookie(SESSION_COOKIE_NAME, signed, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: isSecure,
-    path: '/',
-    maxAge: SESSION_TTL_MS
-  });
+  res.cookie(SESSION_COOKIE_NAME, signed, sessionCookieOptions(req));
 
   res.json({
     success: true,
@@ -165,54 +205,27 @@ router.post('/logout', (req, res) => {
 // 5. Test SSH connection (Authenticated)
 router.post('/test', async (req, res) => {
   try {
-    const { host, port, username, authType, password, privateKey, passphrase, profileId } = req.body;
+    const { profileId } = req.body;
     const currentConfig = getConfig();
     const storedProfile = profileId ? getProfile(profileId) : null;
     const baseConfig = storedProfile ? profileToConnectionConfig(storedProfile) : currentConfig;
-    const effectivePassword = (password && password.trim().length > 0) ? password : baseConfig.password;
-
-    const testResult = await testConnection({
-      host: (host || baseConfig.host || '127.0.0.1').trim(),
-      port: parseInt(port, 10) || baseConfig.port || 22,
-      username: (username || baseConfig.username || 'root').trim(),
-      authType: authType || baseConfig.authType || 'password',
-      password: effectivePassword || '',
-      privateKey: privateKey || baseConfig.privateKey || '',
-      passphrase: passphrase || baseConfig.passphrase || ''
-    });
+    const testResult = await testConnection(buildConnectionConfig(req.body, baseConfig));
 
     res.json(testResult);
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(400).json({ success: false, error: err.message });
   }
 });
 
 // 6. Connect SSH & Optionally Save (Authenticated)
 router.post('/connect', async (req, res) => {
   try {
-    const {
-      host, port, username, authType, password, privateKey, passphrase,
-      remember, profileId, profileName
-    } = req.body;
+    const { remember, profileId, profileName } = req.body;
     const currentConfig = getConfig();
     const storedProfile = profileId ? getProfile(profileId) : null;
     const baseConfig = storedProfile ? profileToConnectionConfig(storedProfile) : currentConfig;
 
-    const newSshConfig = {
-      host: (host || baseConfig.host || '127.0.0.1').trim(),
-      port: parseInt(port, 10) || baseConfig.port || 22,
-      username: (username || baseConfig.username || 'root').trim(),
-      authType: authType || baseConfig.authType || 'password'
-    };
-
-    if (password && password.trim().length > 0) newSshConfig.password = password;
-    else if (baseConfig.password) newSshConfig.password = baseConfig.password;
-
-    if (privateKey && privateKey.trim().length > 0) newSshConfig.privateKey = privateKey;
-    else if (baseConfig.privateKey) newSshConfig.privateKey = baseConfig.privateKey;
-
-    if (passphrase && passphrase.trim().length > 0) newSshConfig.passphrase = passphrase;
-    else if (baseConfig.passphrase) newSshConfig.passphrase = baseConfig.passphrase;
+    const newSshConfig = buildConnectionConfig(req.body, baseConfig);
 
     // Step 1: Test connection before saving anything
     const testRes = await testConnection(newSshConfig);

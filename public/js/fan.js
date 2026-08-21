@@ -2,7 +2,7 @@
 
 const fanText = (zh, en) => window.localize ? window.localize(zh, en) : en;
 
-let fanPollingInterval = null;
+let fanPollingTimer = null;
 let currentFanHistoryRange = '5m';
 let fanHistoryPoints = [];
 let fanHoverIndex = -1;
@@ -14,13 +14,7 @@ window.initFan = function () {
   setupFanSliders();
   setupFanHistoryChart();
 
-  if (fanPollingInterval) clearInterval(fanPollingInterval);
-  fanPollingInterval = setInterval(() => {
-    if (window.currentView === 'fan') {
-      loadFanStatus(false);
-      loadFanHistory(currentFanHistoryRange, false);
-    }
-  }, 2500);
+  startFanPolling();
 
   // Responsive resize
   window.addEventListener('resize', () => {
@@ -29,6 +23,25 @@ window.initFan = function () {
     }
   });
 };
+
+function startFanPolling() {
+  if (fanPollingTimer) clearTimeout(fanPollingTimer);
+  const poll = async () => {
+    if (window.currentView === 'fan' && !document.hidden) {
+      await Promise.allSettled([
+        loadFanStatus(false),
+        loadFanHistory(currentFanHistoryRange, false)
+      ]);
+    }
+    fanPollingTimer = setTimeout(poll, window.getPollingInterval?.() || 2500);
+  };
+  fanPollingTimer = setTimeout(poll, window.getPollingInterval?.() || 2500);
+}
+
+window.addEventListener('preferenceschange', startFanPolling);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && window.currentView === 'fan') startFanPolling();
+});
 
 // ----------------------------------------------------
 // 1. Status & Metrics Pull (Truthful Sensor Reporting)

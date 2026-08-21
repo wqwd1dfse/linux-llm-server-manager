@@ -305,6 +305,13 @@ router.get('/status', async (req, res) => {
       }
     };
 
+    const representativeFanRpm = [fanRpm, cpuFanRpm, gpuRpm, auxFanRpm]
+      .find(Number.isFinite);
+    metricsCollector.updateLatestHistory({
+      fanRpm: representativeFanRpm,
+      cpuPwm: cpuFanPwmPercent
+    });
+
     res.json({
       success: true,
       data: statusData

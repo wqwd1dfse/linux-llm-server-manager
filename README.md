@@ -14,7 +14,7 @@ It combines system telemetry, an SSH terminal, SFTP file management, Docker, sys
 
 - **Hardware telemetry** — CPU, memory, swap, disks, network throughput, and multi-GPU temperature, power, utilization, and VRAM data.
 - **Web SSH terminal** — interactive Bash/Zsh sessions with xterm.js, authenticated WebSocket upgrades, and strict Origin validation.
-- **SFTP file manager** — navigation, per-server favorites, recoverable trash, chunked uploads, editing, chmod, archives, and image previews.
+- **SFTP file manager** — navigation, per-server favorites, recoverable trash, bounded uploads, editing, chmod, path-safe archive extraction, and image previews.
 - **LLM Studio** — validated llama-server parameters, SSH-forwarded loopback access, streaming chat, Hugging Face downloads, and launch presets.
 - **Cooling console** — PWM controls, automatic/full-speed/quiet presets, sensor probing, readback verification, and fail-safe recovery.
 - **Docker and systemd management** — containers, images, logs, processes, services, and lifecycle controls.
@@ -33,11 +33,12 @@ Security controls include:
 - PBKDF2-HMAC-SHA512 password hashing with 220,000 iterations.
 - Signed `HttpOnly`, `SameSite=Lax` session cookies.
 - Login rate limiting and expiring server-side sessions.
-- SSH host-key trust-on-first-use verification.
+- SSH host-key trust-on-first-use verification that rejects changed fingerprints by default.
 - Array-based command execution without shell string interpolation.
 - A strict Content Security Policy with inline event handlers disabled.
 - Loopback-only first-run setup unless `ALLOW_REMOTE_SETUP=true` is explicitly configured.
 - In-memory SSH credentials unless local persistence is explicitly enabled.
+- Archive traversal, symlink, entry-count, and expanded-size defenses.
 - Permission-restricted temporary curl configuration for remote Hugging Face downloads.
 
 Rotate any real credentials used during development and verify that secrets have never been committed to Git history.
@@ -83,6 +84,7 @@ Download and install it on the target host:
     sudo ./install.sh
 
 Review /etc/default/fan-control before unattended use because hwmon PWM node layouts vary by motherboard and GPU. See linux/fan-control/README.md for configuration and rollback instructions.
+
 ## Configuration
 
 See [.env.example](.env.example) for every option. Common settings include:
@@ -99,13 +101,17 @@ AUTO_CONNECT=true
 ALLOW_REMOTE_SETUP=false
 TRUST_PROXY=false
 ENABLE_CUSTOM_SCRIPTS=false
+SSH_STRICT_HOST_CHECK=true
 
 MODEL_ROOTS=/mnt/models,/opt/models
 MODEL_SCAN_MAX_DEPTH=4
 LLM_BIND_HOST=127.0.0.1
+METRICS_INTERVAL=2000
 
 MAX_UPLOAD_FILE_MB=512
 MAX_UPLOAD_FILES=10
+MAX_ARCHIVE_ENTRIES=10000
+MAX_ARCHIVE_EXPANDED_MB=102400
 ```
 
 Keep `HOST` and `LLM_BIND_HOST` on loopback by default. Enable `TRUST_PROXY` only for a known reverse proxy topology, and enable custom scripts only for trusted administrators.
@@ -136,7 +142,7 @@ The frontend uses native JavaScript and Express without a build step or extra ru
 npm test
 ```
 
-Tests cover authentication, sessions, rate limiting, HTTP flows, WebSocket Origin checks, command-injection defenses, LLM validation, model-path boundaries, security headers, telemetry, frontend hardening, and internationalization regressions. CI runs on Node.js 18, 20, and 22.
+Tests cover authentication, atomic persistence, strict SSH host-key pinning, sessions, rate limiting, HTTP error flows, WebSocket Origin checks, command-injection defenses, LLM validation, model-path boundaries, archive allowlists, telemetry retention, escaped Markdown, frontend hardening, and internationalization regressions. CI runs on Node.js 18, 20, and 22.
 
 ## Production deployment
 

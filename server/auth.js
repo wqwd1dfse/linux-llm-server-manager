@@ -22,9 +22,25 @@ const loginRateLimit = new Map();
 const MAX_LOGIN_ATTEMPTS = 5;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 const LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_RATE_LIMIT_ENTRIES = 10_000;
+
+function pruneRateLimitEntries(now = Date.now()) {
+  for (const [ip, entry] of loginRateLimit.entries()) {
+    const expiresAt = Math.max(
+      (entry.firstAttempt || 0) + RATE_LIMIT_WINDOW_MS,
+      entry.lockedUntil || 0
+    );
+    if (expiresAt <= now) loginRateLimit.delete(ip);
+  }
+
+  while (loginRateLimit.size > MAX_RATE_LIMIT_ENTRIES) {
+    loginRateLimit.delete(loginRateLimit.keys().next().value);
+  }
+}
 
 export function checkRateLimit(ip) {
   const now = Date.now();
+  pruneRateLimitEntries(now);
   const entry = loginRateLimit.get(ip);
   if (!entry) return { allowed: true };
 
@@ -48,6 +64,7 @@ export function checkRateLimit(ip) {
 
 export function recordLoginAttempt(ip, success) {
   const now = Date.now();
+  pruneRateLimitEntries(now);
   if (success) {
     loginRateLimit.delete(ip);
     return;
@@ -56,6 +73,7 @@ export function recordLoginAttempt(ip, success) {
   const entry = loginRateLimit.get(ip) || { count: 0, firstAttempt: now, lockedUntil: null };
   entry.count += 1;
   loginRateLimit.set(ip, entry);
+  pruneRateLimitEntries(now);
 }
 
 export function recordFailedAttempt(ip) {
@@ -138,12 +156,16 @@ export function isPasswordSet() {
 }
 
 export function setInitialPassword(password, username = 'admin') {
-  if (!password || password.length < MIN_PASSWORD_LENGTH) {
+  if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
     throw new Error(`密码长度至少需要 ${MIN_PASSWORD_LENGTH} 个字符`);
   }
+  if (typeof username !== 'string') throw new Error('管理员用户名必须为字符串');
   const cleanUser = (username || 'admin').trim();
   if (!cleanUser) {
     throw new Error('管理员用户名不能为空');
+  }
+  if (cleanUser.length > 64 || /[\u0000-\u001f\u007f]/.test(cleanUser)) {
+    throw new Error('管理员用户名不得超过 64 个字符或包含控制字符');
   }
 
   const record = {
@@ -165,7 +187,7 @@ export function authenticateUser(username, password, ip = '127.0.0.1') {
     return { success: false, needsSetup: true, error: '系统尚未配置管理员密码，请先完成初始密码设置。' };
   }
 
-  const inputUser = (username || '').trim();
+  const inputUser = typeof username === 'string' ? username.trim() : '';
   const isUsernameMatch = (inputUser === authRecord.username);
   const isPasswordMatch = isUsernameMatch && verifyPassword(password || '', authRecord);
 
@@ -189,7 +211,13 @@ export function parseCookies(cookieHeader) {
     const parts = cookie.split('=');
     const name = parts.shift()?.trim();
     if (name) {
-      list[name] = decodeURIComponent(parts.join('=')?.trim() || '');
+      const value = parts.join('=')?.trim() || '';
+      try {
+        list[name] = decodeURIComponent(value);
+      } catch (_) {
+        // Ignore malformed values instead of turning authentication into a
+        // 500 response for the entire request.
+      }
     }
   });
 

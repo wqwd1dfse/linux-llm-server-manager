@@ -6,6 +6,11 @@ const initializedViews = new Set();
 const loadingViews = new Map();
 let serverProfiles = [];
 
+window.getPollingInterval = function getPollingInterval() {
+  const saved = Number.parseInt(localStorage.getItem('win-poll-interval') || '2500', 10);
+  return [1000, 2500, 5000].includes(saved) ? saved : 2500;
+};
+
 const featureBundles = Object.freeze({
   files: { scripts: ['js/files.js'], initializer: 'initFiles' },
   dashboard: { scripts: ['js/dashboard.js'], initializer: 'initDashboard' },

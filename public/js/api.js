@@ -14,13 +14,15 @@ window.api = {
   async request(url, options = {}) {
     try {
       const { headers = {}, ...requestOptions } = options;
+      const requestHeaders = new Headers(headers);
+      requestHeaders.set('Accept', 'application/json');
+      if (requestOptions.body != null && !(requestOptions.body instanceof FormData) && !requestHeaders.has('Content-Type')) {
+        requestHeaders.set('Content-Type', 'application/json');
+      }
       const res = await fetch(url, {
         credentials: 'same-origin',
         ...requestOptions,
-        headers: {
-          'Content-Type': 'application/json',
-          ...headers
-        }
+        headers: requestHeaders
       });
 
       let data;

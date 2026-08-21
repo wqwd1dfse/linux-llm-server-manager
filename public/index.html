@@ -754,7 +754,7 @@
                 <button class="cmd-btn btn-sm" data-action="export-fan-chart" title="将当前温度与能耗曲线保存为高清 PNG 图片" style="font-size: 11px; padding: 2px 8px;">
                   📸 导出图表
                 </button>
-                <span class="titlebar-host-badge" style="font-size: 10px; color: var(--perf-green); background: rgba(16, 185, 129, 0.1);">● 实时采样 3s/次</span>
+                <span class="titlebar-host-badge" style="font-size: 10px; color: var(--perf-green); background: rgba(16, 185, 129, 0.1);">● 实时采样</span>
               </div>
 
               <!-- Interactive Legend Pills with Toggle & Dynamic Readouts -->
@@ -1032,15 +1032,15 @@
             <!-- Grid 2: Polling & Alarm Threshold -->
             <div class="perf-grid-2">
               <div class="perf-card">
-                <div class="perf-card-title" data-i18n="settings.perf_title">⏱️ 实时监控轮询刷新周期</div>
+                <div class="perf-card-title" data-i18n="settings.perf_title">⏱️ 功能数据自动刷新周期</div>
                 <div style="margin-top: 8px;">
-                  <label style="font-size: 12px; color: var(--win-text-secondary); margin-bottom: 4px; display: block;" data-i18n="settings.perf_label">数据更新频率</label>
+                  <label style="font-size: 12px; color: var(--win-text-secondary); margin-bottom: 4px; display: block;" data-i18n="settings.perf_label">客户端轮询频率</label>
                   <select id="setting-poll-interval" style="width: 100%; background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 8px 12px; font-size: 12px; cursor: pointer;">
                     <option value="1000">⚡ 1.0 秒 (超高频极速采样)</option>
                     <option value="2500" selected>🚀 2.5 秒 (标准推荐平衡)</option>
                     <option value="5000">🍃 5.0 秒 (节能与低网络开销)</option>
                   </select>
-                  <div style="font-size: 11px; color: var(--win-text-muted); margin-top: 6px;" data-i18n="settings.perf_note">控制风扇、温度历史曲线及系统硬件仪表盘的自动拉取周期。</div>
+                  <div style="font-size: 11px; color: var(--win-text-muted); margin-top: 6px;" data-i18n="settings.perf_note">控制风扇曲线、LLM 状态与下载任务轮询；硬件遥测由服务端 METRICS_INTERVAL 控制。</div>
                 </div>
               </div>
 

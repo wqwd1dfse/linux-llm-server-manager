@@ -6,6 +6,16 @@ const allowedOrigins = allowedOriginsEnv
   .map(s => s.trim())
   .filter(Boolean);
 
+function isSameHostOrigin(origin, host) {
+  if (!origin || !host) return false;
+  try {
+    const parsed = new URL(origin);
+    return ['http:', 'https:'].includes(parsed.protocol) && parsed.host === host;
+  } catch (_) {
+    return false;
+  }
+}
+
 export function applySecurityHeaders(req, res, next) {
   // Prevent MIME type sniffing
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -16,13 +26,12 @@ export function applySecurityHeaders(req, res, next) {
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
 
-  if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
+  if (req.secure === true) {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   }
 
-
-  // XSS protection legacy header
-  res.setHeader('X-XSS-Protection', '1; mode=block');
+  // Disable the obsolete browser XSS auditor; CSP is authoritative.
+  res.setHeader('X-XSS-Protection', '0');
 
   // Referrer Policy
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
@@ -51,8 +60,9 @@ export function applySecurityHeaders(req, res, next) {
   // Handle CORS
   const origin = req.headers.origin;
   if (origin) {
-    const isSameHost = (req.headers.host && (origin.endsWith(`//${req.headers.host}`) || origin === `http://${req.headers.host}` || origin === `https://${req.headers.host}`));
+    const isSameHost = isSameHostOrigin(origin, req.headers.host);
     const isAllowed = isSameHost || allowedOrigins.includes(origin);
+    res.setHeader('Vary', 'Origin');
 
     if (isAllowed) {
       res.setHeader('Access-Control-Allow-Origin', origin);

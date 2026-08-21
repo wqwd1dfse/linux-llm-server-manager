@@ -5,7 +5,6 @@ import { getConfig, updateHfToken } from '../config.js';
 import { validatePathWithinRoots, validatePort, validateSafePath } from '../executor.js';
 import http from 'http';
 import path from 'path';
-import fs from 'fs';
 
 const router = Router();
 
@@ -17,6 +16,48 @@ const LLM_BIND_HOST = ALLOWED_LLM_BIND_HOSTS.has(configuredBindHost) ? configure
 
 if (LLM_BIND_HOST === '0.0.0.0') {
   console.warn('[LLM] LLM_BIND_HOST=0.0.0.0 exposes llama-server to the remote network; use a firewall and API authentication.');
+}
+
+const HF_FETCH_TIMEOUT_MS = 15_000;
+const MAX_DOWNLOAD_TASKS = 100;
+const DOWNLOAD_TASK_RETENTION_MS = 60 * 60 * 1000;
+
+function parseBoundedInteger(value, name, min, max, fallback = null) {
+  if ((value === undefined || value === null || value === '') && fallback !== null) return fallback;
+  const text = String(value).trim();
+  if (!/^-?\d+$/.test(text)) throw new Error(`${name} 参数必须为整数`);
+  const parsed = Number(text);
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${name} 参数必须在 ${min} 到 ${max} 之间`);
+  }
+  return parsed;
+}
+
+function parseBoolean(value, name, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (value === true || value === 'true' || value === 1 || value === '1') return true;
+  if (value === false || value === 'false' || value === 0 || value === '0') return false;
+  throw new Error(`${name} 参数必须为布尔值`);
+}
+
+async function fetchFromHuggingFace(url) {
+  try {
+    return await fetch(url, {
+      headers: { 'User-Agent': 'Linux-LLM-Server-Manager/1.0' },
+      signal: AbortSignal.timeout(HF_FETCH_TIMEOUT_MS)
+    });
+  } catch (error) {
+    if (error.name === 'TimeoutError') throw new Error('Hugging Face API 请求超时');
+    throw error;
+  }
+}
+
+function validateHfRepoId(value) {
+  const repo = String(value || '').trim();
+  if (repo.length > 200 || !/^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(repo)) {
+    throw new Error('Hugging Face Repo 必须为 owner/model 格式');
+  }
+  return repo;
 }
 
 // In-Memory Background Download Tasks Tracker
@@ -36,17 +77,31 @@ let activeInstance = {
   launchedAt: null
 };
 
+function pruneDownloadTasks(now = Date.now()) {
+  for (const [id, task] of downloadTasks.entries()) {
+    if (task.status !== 'downloading' && now - (task.finishedAt || task.startTime) > DOWNLOAD_TASK_RETENTION_MS) {
+      downloadTasks.delete(id);
+    }
+  }
+  while (downloadTasks.size > MAX_DOWNLOAD_TASKS) {
+    const removable = [...downloadTasks.entries()].find(([, task]) => task.status !== 'downloading');
+    if (!removable) break;
+    downloadTasks.delete(removable[0]);
+  }
+}
+
 // Model Scanner Cache
 let cachedLocalModels = null;
 let lastModelScanTime = 0;
 let isScanningModels = false;
 
 function formatBytes(bytes) {
-  if (!bytes || bytes === 0) return '0 B';
+  const numericBytes = Number(bytes);
+  if (!Number.isFinite(numericBytes) || numericBytes <= 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  const i = Math.min(sizes.length - 1, Math.floor(Math.log(numericBytes) / Math.log(k)));
+  return `${Number.parseFloat((numericBytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 }
 
 function validateModelLaunchParams(body) {
@@ -65,15 +120,8 @@ function validateModelLaunchParams(body) {
 
   const validPort = validatePort(port);
 
-  const parsedNgl = Number.parseInt(ngl, 10);
-  if (!Number.isInteger(parsedNgl) || parsedNgl < 0 || parsedNgl > 9999) {
-    throw new Error('ngl 参数必须在 0 到 9999 之间');
-  }
-
-  const parsedCtx = Number.parseInt(ctx, 10);
-  if (!Number.isInteger(parsedCtx) || parsedCtx < 512 || parsedCtx > 2097152) {
-    throw new Error('ctx 上下文长度必须在 512 到 2097152 之间');
-  }
+  const parsedNgl = parseBoundedInteger(ngl, 'ngl', 0, 9999);
+  const parsedCtx = parseBoundedInteger(ctx, 'ctx', 512, 2097152);
 
   const cleanCtk = String(ctk).toLowerCase().trim();
   if (!ALLOWED_CACHE_TYPES.has(cleanCtk)) {
@@ -89,19 +137,10 @@ function validateModelLaunchParams(body) {
   if (cleanAlias.length > 64) cleanAlias = cleanAlias.slice(0, 64);
   if (!cleanAlias) cleanAlias = 'llm-model';
 
-  let cleanThreads = null;
-  if (threads !== undefined && threads !== null && threads !== '') {
-    const t = Number.parseInt(threads, 10);
-    if (!Number.isInteger(t) || t < 1 || t > 256) throw new Error('threads 参数必须在 1 到 256 之间');
-    cleanThreads = t;
-  }
-
-  let cleanParallel = null;
-  if (parallel !== undefined && parallel !== null && parallel !== '') {
-    const np = Number.parseInt(parallel, 10);
-    if (!Number.isInteger(np) || np < 1 || np > 64) throw new Error('parallel 参数必须在 1 到 64 之间');
-    cleanParallel = np;
-  }
+  const cleanThreads = threads === undefined || threads === null || threads === ''
+    ? null : parseBoundedInteger(threads, 'threads', 1, 256);
+  const cleanParallel = parallel === undefined || parallel === null || parallel === ''
+    ? null : parseBoundedInteger(parallel, 'parallel', 1, 64);
 
   return {
     port: validPort,
@@ -112,7 +151,7 @@ function validateModelLaunchParams(body) {
     alias: cleanAlias,
     threads: cleanThreads,
     parallel: cleanParallel,
-    fa: Boolean(fa)
+    fa: parseBoolean(fa, 'fa', true)
   };
 }
 
@@ -138,7 +177,11 @@ function validateHfDownloadUrl(inputUrl) {
   } catch (_) {
     throw new Error('Hugging Face 下载地址无效');
   }
-  if (parsed.protocol !== 'https:' || !['huggingface.co', 'hf-mirror.com'].includes(parsed.hostname)) {
+  if (
+    parsed.protocol !== 'https:' || parsed.username || parsed.password
+    || (parsed.port && parsed.port !== '443')
+    || !['huggingface.co', 'hf-mirror.com'].includes(parsed.hostname)
+  ) {
     throw new Error('下载地址仅允许使用 Hugging Face 或已配置镜像的 HTTPS 地址');
   }
   return parsed.toString();
@@ -180,8 +223,41 @@ function buildLlamaArgs(source, modelPath, params) {
 async function launchLlamaServer(source, modelPath, params) {
   const logFile = '/tmp/llama-server.log';
   const llamaArgs = buildLlamaArgs(source, modelPath, params);
-  const launchScript = `nohup ${DEFAULT_LLAMA_BIN} "$@" > ${logFile} 2>&1 &`;
-  return executeCommand('sh', ['-c', launchScript, 'sh', ...llamaArgs], { timeoutMs: 8000 });
+  const launchScript = `nohup ${DEFAULT_LLAMA_BIN} "$@" > ${logFile} 2>&1 & echo $!`;
+  const result = await executeCommand('sh', ['-c', launchScript, 'sh', ...llamaArgs], { timeoutMs: 8000 });
+  const pid = result.stdout.trim().split('\n').at(-1) || '';
+  if (result.success && !/^\d+$/.test(pid)) {
+    return { ...result, success: false, stderr: 'llama-server 启动后未返回有效 PID' };
+  }
+  return { ...result, pid };
+}
+
+async function stopManagedLlamaServer() {
+  const pid = String(activeInstance.pid || '');
+  if (/^\d+$/.test(pid)) {
+    const stopScript = `
+pid="$1"
+if kill -0 "$pid" 2>/dev/null; then
+  kill -TERM "$pid" 2>/dev/null || true
+  count=0
+  while kill -0 "$pid" 2>/dev/null && [ "$count" -lt 20 ]; do
+    sleep 0.1
+    count=$((count + 1))
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+fi
+`.trim();
+    await executeCommand('sh', ['-c', stopScript, 'sh', pid], { timeoutMs: 5000 });
+  } else {
+    const fallbackScript = `
+pkill -TERM -f '^${DEFAULT_LLAMA_BIN}($| )' 2>/dev/null || true
+sleep 0.5
+pkill -KILL -f '^${DEFAULT_LLAMA_BIN}($| )' 2>/dev/null || true
+`.trim();
+    await executeCommand('sh', ['-c', fallbackScript], { timeoutMs: 3000 });
+  }
+  activeInstance.isRunning = false;
+  activeInstance.pid = null;
 }
 
 // 1. Get LLM Server Status & Currently Loaded Model
@@ -329,10 +405,12 @@ router.get('/local-models', async (req, res) => {
 
     isScanningModels = true;
 
-    const dfRes = await executeCommand('sh', ['-c', "df -k /mnt/models 2>/dev/null | tail -n 1 | awk '{print $2,$3,$4,$5}'"], { timeoutMs: 4000 });
+    const modelRoots = getModelRoots();
+    const dfRes = await executeCommand('df', ['-kP', '--', modelRoots[0]], { timeoutMs: 4000 });
     let diskStats = { total: '--', used: '--', free: '--', percent: '0%' };
     if (dfRes.stdout) {
-      const [tot, used, free, pct] = dfRes.stdout.trim().split(/\s+/);
+      const diskLine = dfRes.stdout.trim().split('\n').at(-1) || '';
+      const [, tot, used, free, pct] = diskLine.trim().split(/\s+/);
       if (tot && used) {
         diskStats = {
           total: formatBytes(parseInt(tot, 10) * 1024),
@@ -343,8 +421,8 @@ router.get('/local-models', async (req, res) => {
       }
     }
 
-    const rootsJson = JSON.stringify(getConfig().modelRoots || ['/mnt/models', '/opt/models']);
-    const maxDepth = parseInt(process.env.MODEL_SCAN_MAX_DEPTH, 10) || 4;
+    const rootsJson = JSON.stringify(modelRoots);
+    const maxDepth = parseBoundedInteger(process.env.MODEL_SCAN_MAX_DEPTH || 4, 'MODEL_SCAN_MAX_DEPTH', 1, 20);
 
     const scanScript = `
 import os, json, datetime
@@ -394,9 +472,14 @@ print(json.dumps(models))
 
     const scanResult = await executeCommand('python3', ['-c', scanScript], { timeoutMs: 15000 });
     let rawModels = [];
+    if (!scanResult.success && !scanResult.stdout.trim()) {
+      throw new Error(scanResult.stderr || 'Unable to scan configured model roots');
+    }
     try {
       rawModels = JSON.parse(scanResult.stdout.trim());
-    } catch (_) {}
+    } catch (_) {
+      throw new Error('Remote model scan returned malformed data');
+    }
 
     const activeModelKeyword = activeInstance.alias || '';
 
@@ -466,15 +549,17 @@ router.get('/hf/search', async (req, res) => {
   try {
     const { q = '', filter = 'gguf', sort = 'downloads', limit = 30, mirror = false } = req.query;
     const baseApi = mirror === 'true' || mirror === true ? 'https://hf-mirror.com' : 'https://huggingface.co';
+    const cleanQuery = String(q).trim().slice(0, 200);
+    const cleanFilter = String(filter).trim().slice(0, 64);
+    const cleanSort = ['downloads', 'likes', 'lastModified', 'trending'].includes(String(sort)) ? String(sort) : 'downloads';
+    const cleanLimit = parseBoundedInteger(limit, 'limit', 1, 50, 30);
 
-    let searchUrl = `${baseApi}/api/models?limit=${Math.min(parseInt(limit, 10) || 30, 50)}&full=false&direction=-1`;
-    if (sort && sort !== 'trending') searchUrl += `&sort=${encodeURIComponent(sort)}`;
-    if (filter) searchUrl += `&filter=${encodeURIComponent(filter)}`;
-    if (q) searchUrl += `&search=${encodeURIComponent(q)}`;
+    let searchUrl = `${baseApi}/api/models?limit=${cleanLimit}&full=false&direction=-1`;
+    if (cleanSort !== 'trending') searchUrl += `&sort=${encodeURIComponent(cleanSort)}`;
+    if (cleanFilter) searchUrl += `&filter=${encodeURIComponent(cleanFilter)}`;
+    if (cleanQuery) searchUrl += `&search=${encodeURIComponent(cleanQuery)}`;
 
-    const hfRes = await fetch(searchUrl, {
-      headers: { 'User-Agent': 'Server-Manager-Dashboard/1.0' }
-    });
+    const hfRes = await fetchFromHuggingFace(searchUrl);
 
     if (!hfRes.ok) {
       throw new Error(`HF API 响应失败 (${hfRes.status})`);
@@ -512,15 +597,12 @@ router.get('/hf/search', async (req, res) => {
 // Get files in Hugging Face Repo
 router.get('/hf/model-files', async (req, res) => {
   try {
-    const { repo, mirror = false } = req.query;
-    if (!repo || typeof repo !== 'string') return res.status(400).json({ success: false, error: '缺少 repo 参数' });
-
+    const { mirror = false } = req.query;
+    const repo = validateHfRepoId(req.query.repo);
     const baseApi = mirror === 'true' || mirror === true ? 'https://hf-mirror.com' : 'https://huggingface.co';
-    const treeUrl = `${baseApi}/api/models/${encodeURIComponent(repo)}/tree/main`;
-
-    const treeRes = await fetch(treeUrl, {
-      headers: { 'User-Agent': 'Server-Manager-Dashboard/1.0' }
-    });
+    const encodedRepo = repo.split('/').map(encodeURIComponent).join('/');
+    const treeUrl = `${baseApi}/api/models/${encodedRepo}/tree/main`;
+    const treeRes = await fetchFromHuggingFace(treeUrl);
 
     if (!treeRes.ok) {
       throw new Error(`无法获取该模型的文件列表 (${treeRes.status})`);
@@ -580,6 +662,7 @@ router.get('/hf/model-files', async (req, res) => {
 router.post('/hf/download', async (req, res) => {
   let tokenConfigToClean = '';
   try {
+    pruneDownloadTasks();
     const { repo, filename, downloadUrl, targetDir = '/mnt/models', hfToken } = req.body;
     if (!filename || !downloadUrl) {
       return res.status(400).json({ success: false, error: '缺少下载参数' });
@@ -587,8 +670,12 @@ router.post('/hf/download', async (req, res) => {
 
     const safeTargetDir = validateModelTargetDir(targetDir);
     const safeFilename = path.posix.basename(String(filename).replace(/\\/g, '/'));
-    if (!safeFilename || !safeFilename.toLowerCase().endsWith('.gguf')) {
-      throw new Error('仅允许下载 GGUF 模型文件');
+    if (
+      !safeFilename || !safeFilename.toLowerCase().endsWith('.gguf')
+      || /[\u0000-\u001f\u007f]/.test(safeFilename)
+      || Buffer.byteLength(safeFilename, 'utf8') > 255
+    ) {
+      throw new Error('仅允许下载文件名有效的 GGUF 模型文件');
     }
     const safeDownloadUrl = validateHfDownloadUrl(downloadUrl);
     const taskId = 'task_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
@@ -596,8 +683,14 @@ router.post('/hf/download', async (req, res) => {
     const partFile = `${finalFile}.part`;
     const logFile = `/tmp/download_${taskId}.log`;
     const tokenConfigPath = `/tmp/.server-manager-curl-${taskId}.conf`;
+    if ([...downloadTasks.values()].some((task) => task.status === 'downloading' && task.destFile === finalFile)) {
+      return res.status(409).json({ success: false, error: '该模型文件已有正在运行的下载任务' });
+    }
 
-    await executeCommand('mkdir', ['-p', safeTargetDir]);
+    const mkdirResult = await executeCommand('mkdir', ['-p', safeTargetDir]);
+    if (!mkdirResult.success) {
+      throw new Error(mkdirResult.stderr || '无法创建模型目标目录');
+    }
     if (hfToken && typeof hfToken === 'string' && hfToken.trim()) {
       updateHfToken(hfToken.trim());
     }
@@ -651,7 +744,7 @@ echo $!
       logFile,
       tokenConfigPath: activeTokenConfig,
       status: 'downloading',
-      totalBytes: parseInt(req.body.totalBytes, 10) || 0,
+      totalBytes: parseBoundedInteger(req.body.totalBytes, 'totalBytes', 0, Number.MAX_SAFE_INTEGER, 0),
       downloadedBytes: 0,
       percent: 0,
       speedFormatted: '-- MB/s',
@@ -680,16 +773,21 @@ echo $!
 router.get('/hf/tasks', async (req, res) => {
   try {
     const tasksList = [];
+    pruneDownloadTasks();
 
     for (const [id, task] of downloadTasks.entries()) {
       if (task.status === 'downloading') {
-        const sizeRes = await executeCommand('sh', ['-c', `stat -c %s "${task.partFile}" 2>/dev/null || stat -c %s "${task.destFile}" 2>/dev/null || echo 0`], { timeoutMs: 2000 });
-        const curBytes = parseInt(sizeRes.stdout.trim(), 10) || 0;
+        const sizeRes = await executeCommand(
+          'sh',
+          ['-c', 'stat -c %s -- "$1" 2>/dev/null || stat -c %s -- "$2" 2>/dev/null || echo 0', 'sh', task.partFile, task.destFile],
+          { timeoutMs: 2000 }
+        );
+        const curBytes = Number.parseInt(sizeRes.stdout.trim(), 10) || 0;
         task.downloadedBytes = curBytes;
 
         if (task.pid) {
-          const procCheck = await executeCommand('sh', ['-c', `ps -p ${task.pid} >/dev/null 2>&1 && echo "running"`], { timeoutMs: 2000 });
-          const isProcAlive = procCheck.stdout.includes('running');
+          const procCheck = await executeCommand('kill', ['-0', String(task.pid)], { timeoutMs: 2000 });
+          const isProcAlive = procCheck.success;
 
           if (!isProcAlive) {
             const finalCheck = await executeCommand('test', ['-f', task.destFile], { timeoutMs: 2000 });
@@ -699,10 +797,11 @@ router.get('/hf/tasks', async (req, res) => {
             } else {
               task.status = 'error';
             }
+            task.finishedAt = Date.now();
           }
         }
 
-        if (task.totalBytes > 0 && task.status !== 'completed') {
+        if (task.totalBytes > 0 && task.status === 'downloading') {
           task.percent = Math.min(99, Math.round((curBytes / task.totalBytes) * 100));
         }
 
@@ -753,7 +852,11 @@ router.post('/hf/tasks/:id/cancel', async (req, res) => {
     if (!task) return res.status(404).json({ success: false, error: '任务不存在' });
 
     if (task.pid) {
-      await executeCommand('kill', ['-9', String(task.pid)]).catch(() => {});
+      await executeCommand(
+        'sh',
+        ['-c', 'pkill -TERM -P "$1" 2>/dev/null || true; kill -TERM "$1" 2>/dev/null || true', 'sh', String(task.pid)],
+        { timeoutMs: 3000 }
+      ).catch(() => {});
     }
 
     if (task.tokenConfigPath) {
@@ -779,7 +882,7 @@ router.post('/run-local', async (req, res) => {
     const validatedParams = validateModelLaunchParams(req.body);
     const validatedPath = validateModelFilePath(req.body.filePath);
 
-    await executeCommand('pkill', ['-9', '-f', 'llama-server']).catch(() => {});
+    await stopManagedLlamaServer();
 
     const runResult = await launchLlamaServer('file', validatedPath, validatedParams);
 
@@ -791,7 +894,7 @@ router.post('/run-local', async (req, res) => {
       isRunning: true,
       source: 'file',
       port: validatedParams.port,
-      pid: null,
+      pid: runResult.pid,
       runtime: 'llama.cpp',
       modelPath: validatedPath,
       alias: validatedParams.alias,
@@ -817,18 +920,14 @@ router.post('/start', async (req, res) => {
     if (!['file', 'hf'].includes(source)) throw new Error('模型来源仅支持 file 或 hf');
     const validatedParams = validateModelLaunchParams(req.body);
 
-    await executeCommand('pkill', ['-9', '-f', 'llama-server']).catch(() => {});
-
     let validatedModelPath;
     if (source === 'hf') {
-      if (!modelPath || typeof modelPath !== 'string') {
-        throw new Error('HF Repo 格式不能为空');
-      }
-      validatedModelPath = modelPath.trim();
+      validatedModelPath = validateHfRepoId(modelPath);
     } else {
       validatedModelPath = validateModelFilePath(modelPath);
     }
 
+    await stopManagedLlamaServer();
     const runResult = await launchLlamaServer(source, validatedModelPath, validatedParams);
 
     if (!runResult.success) {
@@ -839,7 +938,7 @@ router.post('/start', async (req, res) => {
       isRunning: true,
       source,
       port: validatedParams.port,
-      pid: null,
+      pid: runResult.pid,
       runtime: 'llama.cpp',
       modelPath: validatedModelPath,
       alias: validatedParams.alias,
@@ -861,8 +960,7 @@ router.post('/start', async (req, res) => {
 // Stop llama-server
 router.post('/stop', async (req, res) => {
   try {
-    await executeCommand('pkill', ['-9', '-f', 'llama-server']).catch(() => {});
-    activeInstance.isRunning = false;
+    await stopManagedLlamaServer();
     res.json({ success: true, message: '已停止 llama-server 推理服务' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -875,7 +973,7 @@ router.post('/restart', async (req, res) => {
     if (!activeInstance.modelPath || !activeInstance.launchParams) {
       return res.status(409).json({ success: false, error: '缺少上次启动参数，请重新选择模型启动' });
     }
-    await executeCommand('pkill', ['-9', '-f', 'llama-server']).catch(() => {});
+    await stopManagedLlamaServer();
 
     const runResult = await launchLlamaServer(
       activeInstance.source || 'file',
@@ -886,6 +984,7 @@ router.post('/restart', async (req, res) => {
       return res.status(500).json({ success: false, error: runResult.stderr || '重启失败' });
     }
     activeInstance.isRunning = true;
+    activeInstance.pid = runResult.pid;
     activeInstance.launchedAt = Date.now();
     res.json({ success: true, message: '已按原参数重新启动推理模型服务' });
   } catch (err) {
@@ -945,6 +1044,11 @@ router.post('/chat', async (req, res) => {
         try { tunnel?.destroy(); } catch (_) {}
       });
       proxyRes.pipe(res);
+    });
+    res.on('close', () => {
+      if (!proxyReq.destroyed) proxyReq.destroy();
+      try { tunnel?.destroy(); } catch (_) {}
+      tunnelAgent.destroy();
     });
 
     proxyReq.on('timeout', () => {

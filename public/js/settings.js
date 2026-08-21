@@ -66,6 +66,7 @@ function setupSettingsEvents() {
     localStorage.setItem('hf_model_dir', hfDir);
 
     if (window.setLanguage) window.setLanguage(lang);
+    window.dispatchEvent(new CustomEvent('preferenceschange', { detail: { interval, tempAlarm } }));
     window.toast(lang === 'zh-CN' ? '✅ 系统与全局偏好设置已成功保存！' : '✅ Preferences successfully saved!', 'success');
   });
 }

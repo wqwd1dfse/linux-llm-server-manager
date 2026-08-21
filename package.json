@@ -1,5 +1,5 @@
 {
-  "name": "server-manager-dashboard",
+  "name": "linux-llm-server-manager",
   "version": "1.0.0",
   "description": "Linux / Local LLM Server Management Dashboard",
   "main": "server/index.js",
@@ -26,10 +26,9 @@
   "author": "wqwd1dfse",
   "license": "MIT",
   "dependencies": {
-    "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "multer": "^1.4.5-lts.1",
+    "multer": "^2.2.0",
     "ssh2": "^1.16.0",
     "ws": "^8.18.0"
   }

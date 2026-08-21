@@ -35,7 +35,7 @@
 
 - 📊 **真实硬件遥测与多卡监控 (Hardware Telemetry)**: 采集 CPU 负载、多核占用、RAM 与 Swap、磁盘 I/O 及分区容量、网络吞吐、多 GPU（AMD / NVIDIA / Intel）温度、功耗与显存占用。无传感器时真实上报 `null`，拒绝模拟假数据。
 - 💻 **安全交互终端 (Web SSH Terminal)**: 集成 `xterm.js`，支持全功能 Bash/Zsh 交互、ANSI 真彩色、自动尺寸自适应、严格的 WebSocket Origin 与统一 Session 升级认证。
-- 📁 **完整 SFTP 文件管理器 (SFTP Explorer)**: 目录导航、按服务器隔离的收藏路径、可恢复远程回收站、大文件分片/拖拽上传（单文件 512MB 限制、超限 413、临时文件自动清理）、下载、代码与配置文件在线编辑、权限 Chmod、Tar/Zip 压缩解压、图片即时预览。
+- 📁 **完整 SFTP 文件管理器 (SFTP Explorer)**: 目录导航、按服务器隔离的收藏路径、可恢复远程回收站、大文件分片/拖拽上传（单文件 512MB 限制、超限 413、临时文件自动清理）、下载、代码与配置文件在线编辑、权限 Chmod、带路径穿越/链接/条目数/展开体积防护的安全解压、图片即时预览。
 - 🤖 **大模型工作室与云端下载器 (LLM Studio)**: 严格参数校验（NGL、Context、KV Cache Type 白名单、端口 1-65535、路径边界隔离），动态跟踪 `llama-server` 实例端口，多轮 SSE 流式对话；在线浏览 Hugging Face 开源模型库，一键下载到 `.part` 临时文件，校验成功后原子入库。HF Token 仅持久化在管理端权限为 0600 的配置文件中；远程下载使用临时 0600 curl 配置并在任务结束时删除，不会出现在进程命令行。
 - 🌪️ **硬件级闭环风扇与温控 (Fan & Cooling Console)**: 专为高性能加速卡优化的多路 PWM 转速调节与模式切换（自动温控/极速强冷/静音巡航），具备硬件节点探针、PWM 回读校验（Readback Verification）及写失败自动恢复守护进程（Fail-Safe）。
 - 🐳 **Docker 容器与镜像看板 (Docker Manager)**: 严格参数与标识符校验，纯 DOM 事件绑定，容器状态与实时资源消耗、启停/重启/删除、日志查看、镜像拉取。
@@ -48,11 +48,12 @@
   - PBKDF2-HMAC-SHA512（220,000 次迭代）加盐哈希密码认证，首次密码至少 12 位，持久化原子存储于 `data/auth.json` (0600 权限)。
   - 用户名 + 密码双重严格校验，防暴力破解频率限制（5 次失败锁定 5 分钟）。
   - HMAC-SHA256 签名会话 Cookie (`HttpOnly`, `SameSite=Lax`)。
-  - SSH 主机密钥首次信任（TOFU）指纹校验，抵御中间人攻击。
+  - SSH 主机密钥首次信任（TOFU）指纹校验，后续指纹变化默认拒绝连接，抵御中间人攻击。
   - 全后端统一数组参数化执行器 (`executeCommand(executable, argv[])`)，彻底杜绝命令注入。
   - 静态前端全面 DOM API 重构，移除动态内联事件并使用 `script-src-attr 'none'` CSP，显著收紧 XSS 攻击面。
   - SSH 凭据默认仅保存在当前进程内；只有用户显式勾选时才写入本机 `data/config.json` (0600 权限)。
   - `TRUST_PROXY` 显式配置（默认 `false`），防止反向代理 IP 伪造。
+  - 配置、认证和服务器档案采用原子写入，避免异常退出产生半写文件。
 
 ---
 
@@ -99,6 +100,8 @@ TRUST_PROXY=false
 
 # 启动时是否自动连接已保存的 SSH 配置；维护或隔离测试时可设为 false
 AUTO_CONNECT=true
+# SSH 主机指纹变化时默认拒绝连接；仅在确认换钥后才临时设为 false
+SSH_STRICT_HOST_CHECK=true
 
 # 首次初始化默认仅允许本机访问
 ALLOW_REMOTE_SETUP=false
@@ -106,15 +109,21 @@ ALLOW_REMOTE_SETUP=false
 # 运维脚本安全限制（默认禁止任意自定义 Shell 脚本执行）
 ENABLE_CUSTOM_SCRIPTS=false
 
-# 本地大模型扫描根目录
+# 本地大模型扫描根目录及最大递归深度
 MODEL_ROOTS=/mnt/models,/opt/models
+MODEL_SCAN_MAX_DEPTH=4
 
 # llama-server 默认仅监听远程回环地址，后台通过 SSH 隧道访问
 LLM_BIND_HOST=127.0.0.1
 
-# 上传文件限制 (MB)
+# 服务端硬件遥测周期（毫秒）；客户端功能轮询在设置页单独控制
+METRICS_INTERVAL=2000
+
+# 上传文件与远端安全解压限制
 MAX_UPLOAD_FILE_MB=512
 MAX_UPLOAD_FILES=10
+MAX_ARCHIVE_ENTRIES=10000
+MAX_ARCHIVE_EXPANDED_MB=102400
 ```
 
 ### 4. 启动服务
@@ -156,6 +165,7 @@ Dashboard 无需额外守护进程即可读取硬件传感器；自动温控曲�
 - `public/index.html`：应用外壳与主要业务视图。
 - `public/fragments/modals.html`：弹窗、右键菜单与登录/初始化界面。
 - `public/js/bootstrap.js`：在应用初始化前加载并校验可信静态片段，失败时显示明确错误。
+
 - `public/js/i18n.js`：管理语言状态、即时切换和动态 DOM 翻译。
 - `public/js/i18nCatalog.js`：集中维护英语和简体中文界面词条。
 - `public/js/markdown.js`：为 LLM 对话与模型说明提供统一的转义 Markdown 渲染。
@@ -189,6 +199,9 @@ npm test
 - LLM 参数边界校验、KV Cache 白名单与路径穿越防御
 - CSP 安全响应头与真实硬件遥测指标缓冲区
 - 前端无内联事件、响应式能力、模块化样式与可信片段加载回归测试
+- SSH TOFU 指纹固定与换钥拒绝、配置原子写入及服务器档案字段保留
+- 安全解压格式白名单、硬件历史保留/采样端点和风扇指标回填
+- Markdown 单次转义、XSS 防护、结构化 HTTP 400/404 错误响应
 
 ---
 

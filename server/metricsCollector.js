@@ -5,13 +5,15 @@ class MetricsCollector {
   constructor() {
     this.latestSnapshot = null;
     this.history = [];
-    this.maxHistoryLength = 1200; // 60 minutes @ 3s
+    this.historyRetentionMs = 60 * 60 * 1000;
+    this.maxHistoryLength = 7200; // 60 minutes at the minimum supported 500 ms interval
     this.isCollecting = false;
     this.timer = null;
     this.listeners = new Set();
     this.lastNetStats = { time: 0, rx: 0, tx: 0 };
     this.lastDiskStats = { time: 0, readBytes: 0, writeBytes: 0 };
     this.lastCpuStats = { time: 0, idle: 0, total: 0 };
+    this.currentHost = null;
   }
 
   start() {
@@ -59,26 +61,24 @@ class MetricsCollector {
 
   getHistory(range = '5m') {
     const now = Date.now();
-    let durationMs = 5 * 60 * 1000;
-    let targetVisualPoints = 120;
-
-    if (range === '30m') {
-      durationMs = 30 * 60 * 1000;
-    } else if (range === '60m') {
-      durationMs = 60 * 60 * 1000;
-    }
+    const durations = { '5m': 5 * 60 * 1000, '30m': 30 * 60 * 1000, '60m': 60 * 60 * 1000 };
+    const normalizedRange = Object.hasOwn(durations, range) ? range : '5m';
+    const durationMs = durations[normalizedRange];
+    const targetVisualPoints = 120;
 
     const cutoff = now - durationMs;
     const points = this.history.filter(p => p.t >= cutoff);
 
     let visualPoints = points;
     if (points.length > targetVisualPoints) {
-      const step = Math.ceil(points.length / targetVisualPoints);
-      visualPoints = points.filter((_, i) => i % step === 0);
+      const step = (points.length - 1) / (targetVisualPoints - 1);
+      visualPoints = Array.from({ length: targetVisualPoints }, (_, index) => (
+        points[Math.round(index * step)]
+      ));
     }
 
     const calcStats = (arr, key) => {
-      const valid = arr.map(p => p[key]).filter(v => typeof v === 'number' && !isNaN(v) && v !== null);
+      const valid = arr.map(p => p[key]).filter(Number.isFinite);
       if (!valid.length) return { min: null, max: null, avg: null, current: null, status: 'unavailable' };
       const min = Math.min(...valid);
       const max = Math.max(...valid);
@@ -88,7 +88,7 @@ class MetricsCollector {
     };
 
     return {
-      range,
+      range: normalizedRange,
       durationMs,
       count: visualPoints.length,
       points: visualPoints,
@@ -102,6 +102,24 @@ class MetricsCollector {
     };
   }
 
+  updateLatestHistory(values = {}) {
+    const latest = this.history.at(-1);
+    if (!latest || Date.now() - latest.t > 10_000) return;
+    for (const key of ['fanRpm', 'cpuPwm']) {
+      const value = values[key];
+      if (Number.isFinite(value)) latest[key] = value;
+    }
+  }
+
+  resetRollingState(host = null) {
+    this.currentHost = host;
+    this.latestSnapshot = null;
+    this.history = [];
+    this.lastNetStats = { time: 0, rx: 0, tx: 0 };
+    this.lastDiskStats = { time: 0, readBytes: 0, writeBytes: 0 };
+    this.lastCpuStats = { time: 0, idle: 0, total: 0 };
+  }
+
   async collect() {
     if (this.isCollecting) return this.latestSnapshot;
 
@@ -111,6 +129,9 @@ class MetricsCollector {
       return null;
     }
 
+    if (this.currentHost !== status.host) {
+      this.resetRollingState(status.host);
+    }
     this.isCollecting = true;
     try {
       const script = `
@@ -188,18 +209,22 @@ class MetricsCollector {
       // Record real timestamped sample to history
       const now = Date.now();
       const primaryGpu = parsed.gpu?.devices?.[0];
+      const gpuPower = Number.parseFloat(primaryGpu?.powerDraw);
       this.history.push({
         t: now,
         cpu: parsed.cpu?.usagePercent !== undefined ? parsed.cpu.usagePercent : null,
         gpuJ: primaryGpu?.temperature !== undefined ? primaryGpu.temperature : null,
         gpuE: primaryGpu?.tempEdge !== undefined ? primaryGpu.tempEdge : null,
-        gpuP: primaryGpu?.powerDraw ? parseFloat(primaryGpu.powerDraw) || null : null,
+        gpuP: Number.isFinite(gpuPower) ? gpuPower : null,
         fanRpm: null, // Populated by fan status if queried
         cpuPwm: null
       });
 
+      const cutoff = now - this.historyRetentionMs;
+      const firstRetained = this.history.findIndex((point) => point.t >= cutoff);
+      if (firstRetained > 0) this.history.splice(0, firstRetained);
       if (this.history.length > this.maxHistoryLength) {
-        this.history.shift();
+        this.history.splice(0, this.history.length - this.maxHistoryLength);
       }
 
       // Notify listeners (WebSockets)

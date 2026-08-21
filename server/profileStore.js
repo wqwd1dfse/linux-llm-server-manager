@@ -2,42 +2,44 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { writeJsonAtomic } from './atomicFile.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(here, '..', 'data');
-const PROFILES_PATH = path.join(DATA_DIR, 'servers.json');
+const DEFAULT_PROFILES_PATH = path.join(DATA_DIR, 'servers.json');
 
-function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+export function getProfilesFilePath() {
+  return process.env.SERVER_PROFILES_FILE || DEFAULT_PROFILES_PATH;
 }
 
-function readStore() {
-  ensureDataDir();
-  if (!fs.existsSync(PROFILES_PATH)) return { version: 1, profiles: [] };
+function ensureDataDir(filePath = getProfilesFilePath()) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+function readStore(options = {}) {
+  const profilesPath = getProfilesFilePath();
+  ensureDataDir(profilesPath);
+  if (!fs.existsSync(profilesPath)) return { version: 1, profiles: [] };
   try {
-    const parsed = JSON.parse(fs.readFileSync(PROFILES_PATH, 'utf8'));
+    const parsed = JSON.parse(fs.readFileSync(profilesPath, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.profiles)) {
+      throw new Error('servers.json must contain a profiles array');
+    }
     return {
       version: 1,
-      profiles: Array.isArray(parsed.profiles) ? parsed.profiles : []
+      profiles: parsed.profiles
     };
   } catch (err) {
     console.error('[Profiles] Failed to read servers.json:', err.message);
+    if (options.throwOnError) throw new Error(`服务器档案文件无法解析，已停止覆盖: ${err.message}`);
     return { version: 1, profiles: [] };
   }
 }
 
 function writeStore(store) {
-  ensureDataDir();
-  const tempPath = `${PROFILES_PATH}.tmp-${process.pid}`;
-  fs.writeFileSync(tempPath, JSON.stringify(store, null, 2), { encoding: 'utf8', mode: 0o600 });
-  try {
-    fs.renameSync(tempPath, PROFILES_PATH);
-  } catch (err) {
-    if (!['EEXIST', 'EPERM'].includes(err.code)) throw err;
-    fs.copyFileSync(tempPath, PROFILES_PATH);
-    fs.unlinkSync(tempPath);
-  }
-  try { fs.chmodSync(PROFILES_PATH, 0o600); } catch (_) {}
+  const profilesPath = getProfilesFilePath();
+  ensureDataDir(profilesPath);
+  writeJsonAtomic(profilesPath, store, { encoding: 'utf8', mode: 0o600 });
 }
 
 function cleanText(value, maxLength = 128) {
@@ -47,8 +49,9 @@ function cleanText(value, maxLength = 128) {
 function normalizeProfile(input, existing = {}) {
   const host = cleanText(input.host ?? existing.host, 255);
   const username = cleanText(input.username ?? existing.username, 64);
-  const port = Number.parseInt(input.port ?? existing.port, 10);
-  const authType = input.authType === 'key' ? 'key' : 'password';
+  const port = Number(input.port ?? existing.port);
+  const requestedAuthType = input.authType ?? existing.authType ?? 'password';
+  const authType = requestedAuthType === 'key' ? 'key' : 'password';
   if (!host) throw new Error('主机地址不能为空');
   if (!username) throw new Error('用户名不能为空');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('SSH 端口必须在 1 到 65535 之间');
@@ -101,7 +104,7 @@ export function getProfile(profileId) {
 }
 
 export function saveProfile(input) {
-  const store = readStore();
+  const store = readStore({ throwOnError: true });
   const requestedId = cleanText(input.id, 64);
   const index = requestedId ? store.profiles.findIndex(item => item.id === requestedId) : -1;
   const existing = index >= 0 ? store.profiles[index] : {};
@@ -114,7 +117,7 @@ export function saveProfile(input) {
 }
 
 export function deleteProfile(profileId) {
-  const store = readStore();
+  const store = readStore({ throwOnError: true });
   const id = cleanText(profileId, 64);
   const nextProfiles = store.profiles.filter(item => item.id !== id);
   if (nextProfiles.length === store.profiles.length) return false;

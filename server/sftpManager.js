@@ -196,10 +196,11 @@ export async function renamePath(oldPath, newPath) {
 
 export async function chmodPath(remotePath, mode) {
   const normalized = validateSafePath(remotePath);
-  const octal = parseInt(mode, 8);
-  if (isNaN(octal)) {
+  const cleanMode = String(mode || '').trim();
+  if (!/^[0-7]{3,4}$/.test(cleanMode)) {
     throw new Error(`非法权限模式: ${mode}`);
   }
+  const octal = Number.parseInt(cleanMode, 8);
 
   return withSftp(async (sftp) => {
     return new Promise((resolve, reject) => {

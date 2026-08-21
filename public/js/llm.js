@@ -4,7 +4,7 @@ let currentLlmStatus = null;
 let chatHistory = [];
 let isGenerating = false;
 let abortController = null;
-let llmPollingInterval = null;
+let llmPollingTimer = null;
 let hfCurrentRepo = null;
 let hfMirrorEnabled = false;
 const localModelMetadata = new Map();
@@ -31,18 +31,29 @@ window.initLLM = function () {
   loadLLMStatus();
   loadLocalModelsList();
 
-  if (llmPollingInterval) clearInterval(llmPollingInterval);
-  llmPollingInterval = setInterval(() => {
-    if (window.currentView === 'llm') {
+  startLlmPolling();
+};
+
+function startLlmPolling() {
+  if (llmPollingTimer) clearTimeout(llmPollingTimer);
+  const poll = async () => {
+    if (window.currentView === 'llm' && !document.hidden) {
       const activeTab = document.querySelector('.llm-nav-tab.active')?.getAttribute('data-tab');
       if (activeTab === 'chat' || !activeTab) {
-        loadLLMStatus(false);
+        await loadLLMStatus(false);
       } else if (activeTab === 'tasks') {
-        loadDownloadTasks(false);
+        await loadDownloadTasks(false);
       }
     }
-  }, 3000);
-};
+    llmPollingTimer = setTimeout(poll, window.getPollingInterval?.() || 2500);
+  };
+  llmPollingTimer = setTimeout(poll, window.getPollingInterval?.() || 2500);
+}
+
+window.addEventListener('preferenceschange', startLlmPolling);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && window.currentView === 'llm') startLlmPolling();
+});
 
 // 1. Tab Switching
 function setupLLMTabs() {

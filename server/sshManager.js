@@ -5,12 +5,15 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getConfig, setRuntimeSshOverride } from './config.js';
 import { buildSafeCommand } from './executor.js';
+import { writeJsonAtomic } from './atomicFile.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const KNOWN_HOSTS_FILE = path.join(__dirname, '..', 'data', 'known_hosts.json');
+const DEFAULT_KNOWN_HOSTS_FILE = path.join(__dirname, '..', 'data', 'known_hosts.json');
 
 let activeClient = null;
+let connectingClient = null;
+let connectionAttemptId = 0;
 let isConnecting = false;
 let connectPromise = null;
 let connectionStatus = {
@@ -21,29 +24,43 @@ let connectionStatus = {
   manuallyDisconnected: false
 };
 
+export function getKnownHostsFilePath() {
+  return process.env.SSH_KNOWN_HOSTS_FILE || DEFAULT_KNOWN_HOSTS_FILE;
+}
+
 function loadKnownHosts() {
-  if (!fs.existsSync(KNOWN_HOSTS_FILE)) {
+  const knownHostsFile = getKnownHostsFilePath();
+  if (!fs.existsSync(knownHostsFile)) {
     return {};
   }
   try {
-    const raw = fs.readFileSync(KNOWN_HOSTS_FILE, 'utf-8');
-    return JSON.parse(raw);
-  } catch (_) {
-    return {};
+    const raw = fs.readFileSync(knownHostsFile, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('known-hosts database must contain a JSON object');
+    }
+    return parsed;
+  } catch (error) {
+    console.error('[SSH TOFU] Failed to read known hosts:', error.message);
+    return null;
   }
 }
 
 function saveKnownHost(hostKey, fingerprint, keyType) {
   try {
     const knownHosts = loadKnownHosts();
+    if (!knownHosts) return false;
     knownHosts[hostKey] = {
       fingerprint,
       keyType,
-      firstSeen: new Date().toISOString()
+      firstSeen: knownHosts[hostKey]?.firstSeen || new Date().toISOString(),
+      lastSeen: new Date().toISOString()
     };
-    fs.writeFileSync(KNOWN_HOSTS_FILE, JSON.stringify(knownHosts, null, 2), 'utf-8');
+    writeJsonAtomic(getKnownHostsFilePath(), knownHosts, { encoding: 'utf8', mode: 0o600 });
+    return true;
   } catch (err) {
     console.error('[SSH TOFU] Failed to save known host:', err.message);
+    return false;
   }
 }
 
@@ -54,14 +71,15 @@ function normalizeKeyFingerprint(keyHash) {
   return String(keyHash);
 }
 
-function verifyHostKey(host, port, keyHash, keyType) {
+export function verifyHostKey(host, port, keyHash, keyType = 'ssh-key') {
   const hostKey = `${host}:${port}`;
   const fingerprint = normalizeKeyFingerprint(keyHash);
+  if (!fingerprint) return false;
   const knownHosts = loadKnownHosts();
 
+  if (!knownHosts) return false;
   if (!knownHosts[hostKey] || !knownHosts[hostKey].fingerprint) {
-    saveKnownHost(hostKey, fingerprint, keyType);
-    return true;
+    return saveKnownHost(hostKey, fingerprint, keyType);
   }
 
   const stored = knownHosts[hostKey];
@@ -69,9 +87,14 @@ function verifyHostKey(host, port, keyHash, keyType) {
     return true;
   }
 
-  // Update known host on new valid handshake
-  saveKnownHost(hostKey, fingerprint, keyType);
-  return true;
+  const strictChecking = process.env.SSH_STRICT_HOST_CHECK !== 'false';
+  if (strictChecking) {
+    console.error(`[SSH TOFU] Host key mismatch for ${hostKey}; refusing the connection.`);
+    return false;
+  }
+
+  console.warn(`[SSH TOFU] Host key changed for ${hostKey}; replacing it because SSH_STRICT_HOST_CHECK=false.`);
+  return saveKnownHost(hostKey, fingerprint, keyType);
 }
 
 function buildSshConfig(customConfig = null) {
@@ -117,11 +140,19 @@ export function getConnectionStatus() {
 }
 
 export function disconnect() {
+  connectionAttemptId += 1;
+  if (connectingClient) {
+    try { connectingClient.end(); } catch (_) {}
+    connectingClient = null;
+  }
+  isConnecting = false;
+  connectPromise = null;
   if (activeClient) {
-    try {
-      activeClient.end();
-    } catch (_) {}
+    const client = activeClient;
     activeClient = null;
+    try {
+      client.end();
+    } catch (_) {}
   }
   connectionStatus = {
     connected: false,
@@ -134,83 +165,123 @@ export function disconnect() {
 
 export async function testConnection(customConfig) {
   return new Promise((resolve) => {
-    let testClient;
+    let testClient = null;
+    let settled = false;
+    let timer = null;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try { testClient?.end(); } catch (_) {}
+      resolve(result);
+    };
+
     try {
       const { sshConfig } = buildSshConfig(customConfig);
       testClient = new Client();
 
-      const timer = setTimeout(() => {
-        try { testClient.end(); } catch (_) {}
-        resolve({ success: false, error: '连接超时 (10秒)' });
-      }, 10000);
+      timer = setTimeout(() => finish({ success: false, error: '连接超时 (10 秒)' }), 10000);
 
       testClient.on('ready', () => {
-        clearTimeout(timer);
         testClient.exec('uname -a', (err, stream) => {
           if (err) {
-            testClient.end();
-            return resolve({ success: true, message: 'SSH 登录成功' });
+            return finish({ success: true, message: 'SSH 登录成功' });
           }
           let out = '';
-          stream.on('data', (d) => { out += d.toString(); });
-          stream.on('close', () => {
-            testClient.end();
-            resolve({ success: true, message: '连接成功', system: out.trim() });
+          stream.on('data', (data) => {
+            if (out.length < 64 * 1024) out += data.toString('utf8');
           });
+          stream.on('error', (error) => finish({ success: false, error: error.message }));
+          stream.on('close', () => finish({ success: true, message: '连接成功', system: out.trim() }));
         });
       });
 
-      testClient.on('error', (err) => {
-        clearTimeout(timer);
-        try { testClient.end(); } catch (_) {}
-        resolve({ success: false, error: err.message });
+      testClient.on('error', (err) => finish({ success: false, error: err.message }));
+      testClient.on('close', () => {
+        if (!settled) finish({ success: false, error: 'SSH 连接在验证完成前关闭' });
       });
 
       testClient.connect(sshConfig);
     } catch (err) {
-      resolve({ success: false, error: err.message });
+      finish({ success: false, error: err.message });
     }
   });
 }
 
 export async function getClient(forceReconnect = false, customConfig = null) {
-  if (customConfig) {
-    setRuntimeSshOverride(customConfig);
-  }
-
   if (activeClient && !forceReconnect && connectionStatus.connected) {
     return activeClient;
   }
 
   if (isConnecting && connectPromise) {
-    return connectPromise;
+    if (!forceReconnect) return connectPromise;
+    connectionAttemptId += 1;
+    try { connectingClient?.end(); } catch (_) {}
+    connectingClient = null;
+    isConnecting = false;
+    connectPromise = null;
   }
 
+  if (customConfig) setRuntimeSshOverride(customConfig);
+
+  let sshConfig;
+  let appConfig;
+  try {
+    ({ sshConfig, appConfig } = buildSshConfig(customConfig));
+  } catch (error) {
+    connectionStatus.connected = false;
+    connectionStatus.error = error.message;
+    throw error;
+  }
+
+  if (activeClient) {
+    const previousClient = activeClient;
+    activeClient = null;
+    try { previousClient.end(); } catch (_) {}
+  }
+
+  const attemptId = ++connectionAttemptId;
+  const client = new Client();
+  connectingClient = client;
   isConnecting = true;
   connectionStatus.manuallyDisconnected = false;
+  let ready = false;
+  let settled = false;
 
-  connectPromise = new Promise((resolve, reject) => {
-    if (activeClient) {
-      try { activeClient.end(); } catch (_) {}
-      activeClient = null;
-    }
-
-    let sshConfig, appConfig;
-    try {
-      const built = buildSshConfig(customConfig);
-      sshConfig = built.sshConfig;
-      appConfig = built.appConfig;
-    } catch (e) {
+  const promise = new Promise((resolve, reject) => {
+    const clearPendingAttempt = () => {
+      if (attemptId !== connectionAttemptId) return;
+      if (connectingClient === client) connectingClient = null;
       isConnecting = false;
-      connectionStatus.connected = false;
-      connectionStatus.error = e.message;
-      return reject(e);
-    }
+      connectPromise = null;
+    };
 
-    const client = new Client();
+    const rejectPendingAttempt = (error) => {
+      if (settled) return;
+      settled = true;
+      if (attemptId === connectionAttemptId) {
+        clearPendingAttempt();
+        connectionStatus = {
+          connected: false,
+          lastConnected: connectionStatus.lastConnected,
+          error: error.message,
+          host: `${appConfig.username}@${appConfig.host}:${appConfig.port}`,
+          manuallyDisconnected: connectionStatus.manuallyDisconnected
+        };
+      }
+      reject(error);
+    };
 
     client.on('ready', () => {
+      if (attemptId !== connectionAttemptId || connectionStatus.manuallyDisconnected) {
+        try { client.end(); } catch (_) {}
+        rejectPendingAttempt(new Error('SSH connection attempt was superseded'));
+        return;
+      }
+      ready = true;
+      settled = true;
       activeClient = client;
+      clearPendingAttempt();
       connectionStatus = {
         connected: true,
         lastConnected: new Date().toISOString(),
@@ -218,46 +289,41 @@ export async function getClient(forceReconnect = false, customConfig = null) {
         host: `${appConfig.username}@${appConfig.host}:${appConfig.port}`,
         manuallyDisconnected: false
       };
-      isConnecting = false;
       resolve(client);
     });
 
     client.on('error', (err) => {
-      connectionStatus = {
-        connected: false,
-        lastConnected: connectionStatus.lastConnected,
-        error: err.message,
-        host: `${appConfig.username}@${appConfig.host}:${appConfig.port}`,
-        manuallyDisconnected: connectionStatus.manuallyDisconnected
-      };
-      isConnecting = false;
-      activeClient = null;
-      reject(err);
+      if (!ready) {
+        rejectPendingAttempt(err);
+      } else if (activeClient === client) {
+        connectionStatus.connected = false;
+        connectionStatus.error = err.message;
+      }
     });
 
     client.on('close', () => {
-      connectionStatus.connected = false;
-      activeClient = null;
-      isConnecting = false;
+      if (!ready) rejectPendingAttempt(new Error('SSH connection closed before it became ready'));
+      if (activeClient === client) {
+        activeClient = null;
+        connectionStatus.connected = false;
+      }
     });
 
     client.on('end', () => {
-      connectionStatus.connected = false;
-      activeClient = null;
-      isConnecting = false;
+      if (activeClient === client) {
+        activeClient = null;
+        connectionStatus.connected = false;
+      }
     });
-
-    try {
-      client.connect(sshConfig);
-    } catch (err) {
-      isConnecting = false;
-      connectionStatus.connected = false;
-      connectionStatus.error = err.message;
-      reject(err);
-    }
   });
 
-  return connectPromise;
+  connectPromise = promise;
+  try {
+    client.connect(sshConfig);
+  } catch (error) {
+    client.emit('error', error);
+  }
+  return promise;
 }
 
 /**
@@ -298,18 +364,26 @@ export async function executeRawScript(scriptContent, options = {}) {
  * Internal low-level SSH stream execution with timeouts, truncation, and abort signals
  */
 async function internalExec(commandString, options = {}) {
+  const abortSignal = options.signal;
+  if (abortSignal?.aborted) {
+    return { success: false, code: -1, signal: 'SIGABRT', stdout: '', stderr: 'Command aborted', aborted: true };
+  }
+
   const client = await getClient();
   const timeoutMs = options.timeoutMs || options.timeout || 15000;
-  const maxStdoutBytes = options.maxStdoutBytes || 2 * 1024 * 1024; // 2MB
-  const maxStderrBytes = options.maxStderrBytes || 512 * 1024; // 512KB
+  const maxStdoutBytes = options.maxStdoutBytes || 2 * 1024 * 1024;
+  const maxStderrBytes = options.maxStderrBytes || 512 * 1024;
 
   return new Promise((resolve, reject) => {
     let stdout = '';
     let stderr = '';
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
     let stdoutTruncated = false;
     let stderrTruncated = false;
     let isSettled = false;
     let activeStream = null;
+    let timeoutTimer = null;
 
     const terminateStream = (stream) => {
       if (!stream) return;
@@ -319,82 +393,110 @@ async function internalExec(commandString, options = {}) {
       try { stream.destroy(); } catch (_) {}
     };
 
-    const timeoutTimer = setTimeout(() => {
-      if (!isSettled) {
-        isSettled = true;
-        terminateStream(activeStream);
-        resolve({
-          success: false,
-          code: -1,
-          signal: 'SIGTIMEOUT',
-          stdout: stdout.trim(),
-          stderr: (stderr + `\n[Error: Command timed out after ${timeoutMs}ms]`).trim(),
-          timeout: true
-        });
+    const cleanup = () => {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      abortSignal?.removeEventListener('abort', handleAbort);
+    };
+
+    const finish = (result) => {
+      if (isSettled) return;
+      isSettled = true;
+      cleanup();
+      resolve(result);
+    };
+
+    const fail = (error) => {
+      if (isSettled) return;
+      isSettled = true;
+      cleanup();
+      reject(error);
+    };
+
+    const appendBounded = (data, isError = false) => {
+      const buffer = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
+      const maxBytes = isError ? maxStderrBytes : maxStdoutBytes;
+      const usedBytes = isError ? stderrBytes : stdoutBytes;
+      const remaining = Math.max(0, maxBytes - usedBytes);
+      const text = buffer.subarray(0, remaining).toString('utf8');
+      if (isError) {
+        stderr += text;
+        stderrBytes += Math.min(buffer.length, remaining);
+        if (buffer.length > remaining && !stderrTruncated) {
+          stderrTruncated = true;
+          stderr += '\n[Error output truncated: exceeded max stderr limit]';
+        }
+      } else {
+        stdout += text;
+        stdoutBytes += Math.min(buffer.length, remaining);
+        if (buffer.length > remaining && !stdoutTruncated) {
+          stdoutTruncated = true;
+          stdout += '\n[Output truncated: exceeded max stdout limit]';
+        }
       }
+    };
+
+    function handleAbort() {
+      terminateStream(activeStream);
+      finish({
+        success: false,
+        code: -1,
+        signal: 'SIGABRT',
+        stdout: stdout.trim(),
+        stderr: (stderr + '\n[Error: Command aborted]').trim(),
+        aborted: true,
+        stdoutTruncated,
+        stderrTruncated
+      });
+    }
+
+    abortSignal?.addEventListener('abort', handleAbort, { once: true });
+    if (abortSignal?.aborted) {
+      handleAbort();
+      return;
+    }
+
+    timeoutTimer = setTimeout(() => {
+      terminateStream(activeStream);
+      finish({
+        success: false,
+        code: -1,
+        signal: 'SIGTIMEOUT',
+        stdout: stdout.trim(),
+        stderr: (stderr + `\n[Error: Command timed out after ${timeoutMs}ms]`).trim(),
+        timeout: true,
+        stdoutTruncated,
+        stderrTruncated
+      });
     }, timeoutMs);
 
     client.exec(commandString, (err, stream) => {
-      if (err) {
-        clearTimeout(timeoutTimer);
-        if (isSettled) return;
-        isSettled = true;
-        return reject(err);
-      }
-
+      if (err) return fail(err);
       activeStream = stream;
       if (isSettled) {
         terminateStream(stream);
         return;
       }
 
-      stream.on('data', (data) => {
-        if (stdout.length < maxStdoutBytes) {
-          stdout += data.toString('utf-8');
-        } else if (!stdoutTruncated) {
-          stdoutTruncated = true;
-          stdout += '\n[Output truncated: exceeded max stdout limit]';
-        }
-      });
-
-      stream.stderr.on('data', (data) => {
-        if (stderr.length < maxStderrBytes) {
-          stderr += data.toString('utf-8');
-        } else if (!stderrTruncated) {
-          stderrTruncated = true;
-          stderr += '\n[Error output truncated: exceeded max stderr limit]';
-        }
-      });
-
-      stream.on('close', (code, signal) => {
-        clearTimeout(timeoutTimer);
-        if (!isSettled) {
-          isSettled = true;
-          resolve({
-            success: code === 0,
-            code: code !== null ? code : (signal ? -1 : 0),
-            signal: signal || null,
-            stdout: stdout.trim(),
-            stderr: stderr.trim(),
-            stdoutTruncated,
-            stderrTruncated
-          });
-        }
-      });
-
-      stream.on('error', (streamErr) => {
-        clearTimeout(timeoutTimer);
-        if (!isSettled) {
-          isSettled = true;
-          resolve({
-            success: false,
-            code: -1,
-            signal: null,
-            stdout: stdout.trim(),
-            stderr: (stderr + `\n[Stream Error: ${streamErr.message}]`).trim()
-          });
-        }
-      });
+      stream.on('data', (data) => appendBounded(data));
+      stream.stderr.on('data', (data) => appendBounded(data, true));
+      stream.on('close', (code, signal) => finish({
+        success: code === 0,
+        code: code !== null ? code : (signal ? -1 : 0),
+        signal: signal || null,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        stdoutTruncated,
+        stderrTruncated
+      }));
+      stream.on('error', (streamErr) => finish({
+        success: false,
+        code: -1,
+        signal: null,
+        stdout: stdout.trim(),
+        stderr: (stderr + `\n[Stream Error: ${streamErr.message}]`).trim(),
+        stdoutTruncated,
+        stderrTruncated
+      }));
     });
   });
 }

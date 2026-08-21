@@ -60,6 +60,10 @@ app.use('/api/services', servicesRoutes);
 app.use('/api/scripts', scriptsRoutes);
 app.use('/api/llm', llmRoutes);
 app.use('/api/fan', fanRoutes);
+// Unknown API routes always return machine-readable responses.
+app.use('/api', (req, res) => {
+  res.status(404).json({ success: false, error: 'API endpoint not found' });
+});
 
 // 7. Fallback index.html for SPA
 app.get('*', (req, res, next) => {
@@ -67,6 +71,23 @@ app.get('*', (req, res, next) => {
     return next();
   }
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+});
+// Normalize parser and unexpected errors without exposing stack traces.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  let status = Number.isInteger(err.status) ? err.status : 500;
+  let message = 'Internal server error';
+  if (err.type === 'entity.too.large') {
+    status = 413;
+    message = 'Request body is too large';
+  } else if (err.type === 'entity.parse.failed') {
+    status = 400;
+    message = 'Malformed request body';
+  } else if (status >= 400 && status < 500 && err.message) {
+    message = err.message;
+  }
+  if (status >= 500) console.error('[HTTP] Unhandled request error:', err);
+  res.status(status).json({ success: false, error: message });
 });
 
 // 8. WebSocket Setup with Upgrade Auth & Origin Verification
@@ -111,7 +132,7 @@ server.on('upgrade', (request, socket, head) => {
 
 // 9. Network Binding Defaults (127.0.0.1 default for local safety)
 const HOST = process.env.HOST || getConfig().serverHost || '127.0.0.1';
-let PORT = parseInt(process.env.PORT, 10) || getConfig().serverPort || 3888;
+let PORT = getConfig().serverPort || 3888;
 
 function startServer(portToUse) {
   server.listen(portToUse, HOST, () => {

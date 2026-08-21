@@ -18,6 +18,7 @@ import {
 import { executeCommand } from '../sshManager.js';
 import { validateSafePath } from '../executor.js';
 import { getConfig } from '../config.js';
+import { extractArchiveSafely, isSupportedArchivePath } from '../archiveExtractor.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,9 +28,53 @@ if (!fs.existsSync(UPLOAD_TMP_DIR)) {
   fs.mkdirSync(UPLOAD_TMP_DIR, { recursive: true });
 }
 
+function boundedEnvironmentInteger(value, fallback, min, max) {
+  const text = String(value ?? '').trim();
+  if (!/^\d+$/.test(text)) return fallback;
+  const parsed = Number(text);
+  return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+}
+
 // Configurable upload limits (Default 512MB per file, max 10 files per batch)
-const MAX_FILE_SIZE = (parseInt(process.env.MAX_UPLOAD_FILE_MB, 10) || 512) * 1024 * 1024;
-const MAX_FILES = parseInt(process.env.MAX_UPLOAD_FILES, 10) || 10;
+const MAX_FILE_SIZE = boundedEnvironmentInteger(process.env.MAX_UPLOAD_FILE_MB, 512, 1, 10240) * 1024 * 1024;
+const MAX_FILES = boundedEnvironmentInteger(process.env.MAX_UPLOAD_FILES, 10, 1, 100);
+const PREVIEW_MIME_TYPES = Object.freeze({
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.pdf': 'application/pdf'
+});
+
+function cleanupUploadedFiles(files) {
+  for (const file of files || []) {
+    if (!file?.path) continue;
+    try {
+      fs.unlinkSync(file.path);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.warn(`[Upload] Failed to remove temporary file ${file.path}: ${error.message}`);
+      }
+    }
+  }
+}
+
+function sanitizeUploadFilename(originalName) {
+  const filename = path.posix.basename(String(originalName || '').replace(/\\/g, '/')).trim();
+  if (!filename || filename === '.' || filename === '..' || /[\u0000-\u001f\u007f]/.test(filename)) {
+    throw new Error('上传文件名为空或包含非法控制字符');
+  }
+  if (Buffer.byteLength(filename, 'utf8') > 255) throw new Error('上传文件名超过 255 字节');
+  return filename;
+}
+
+function buildContentDisposition(disposition, filename) {
+  const fallback = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_') || 'download';
+  return `${disposition}; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
 
 const upload = multer({
   dest: UPLOAD_TMP_DIR,
@@ -154,19 +199,12 @@ router.get('/preview', async (req, res) => {
   try {
     const filePath = validateSafePath(req.query.path);
     const ext = path.posix.extname(filePath).toLowerCase();
-    const mimeMap = {
-      '.png': 'image/png',
-      '.jpg': 'image/jpeg',
-      '.jpeg': 'image/jpeg',
-      '.gif': 'image/gif',
-      '.svg': 'image/svg+xml',
-      '.webp': 'image/webp',
-      '.ico': 'image/x-icon',
-      '.pdf': 'application/pdf'
-    };
-
-    const contentType = mimeMap[ext] || 'application/octet-stream';
+    const contentType = PREVIEW_MIME_TYPES[ext];
+    if (!contentType) {
+      return res.status(415).json({ success: false, error: '该文件类型不支持浏览器内预览，请使用下载功能' });
+    }
     res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', buildContentDisposition('inline', path.posix.basename(filePath)));
 
     await withSftp(async (sftp) => {
       return new Promise((resolve, reject) => {
@@ -190,7 +228,7 @@ router.get('/download', async (req, res) => {
     const filePath = validateSafePath(req.query.path);
     const filename = path.posix.basename(filePath);
 
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+    res.setHeader('Content-Disposition', buildContentDisposition('attachment', filename));
     res.setHeader('Content-Type', 'application/octet-stream');
 
     await withSftp(async (sftp) => {
@@ -213,6 +251,7 @@ router.get('/download', async (req, res) => {
 router.post('/upload', (req, res, next) => {
   upload.array('files', MAX_FILES)(req, res, (err) => {
     if (err) {
+      cleanupUploadedFiles([...(req.files || []), ...(req.file ? [req.file] : [])]);
       if (err.code === 'LIMIT_FILE_SIZE') {
         return res.status(413).json({
           success: false,
@@ -235,11 +274,7 @@ router.post('/upload', (req, res, next) => {
   try {
     targetDir = validateSafePath(req.body.targetDir || '/root');
   } catch (err) {
-    for (const file of uploadedFiles) {
-      if (file.path && fs.existsSync(file.path)) {
-        try { fs.unlinkSync(file.path); } catch (_) {}
-      }
-    }
+    cleanupUploadedFiles(uploadedFiles);
     return res.status(400).json({ success: false, error: err.message });
   }
 
@@ -256,18 +291,16 @@ router.post('/upload', (req, res, next) => {
 
   for (const file of uploadedFiles) {
     const localPath = file.path;
-    const safeFilename = path.posix.basename(file.originalname.replace(/\\/g, '/'));
-    const remotePath = path.posix.join(targetDir, safeFilename);
-
+    let safeFilename = String(file.originalname || 'unnamed');
     try {
+      safeFilename = sanitizeUploadFilename(file.originalname);
+      const remotePath = path.posix.join(targetDir, safeFilename);
       await uploadLocalFile(localPath, remotePath);
       results.push(safeFilename);
     } catch (e) {
       errors.push(`${safeFilename}: ${e.message}`);
     } finally {
-      if (fs.existsSync(localPath)) {
-        try { fs.unlinkSync(localPath); } catch (_) {}
-      }
+      cleanupUploadedFiles([file]);
     }
   }
 
@@ -536,19 +569,10 @@ router.post('/extract', async (req, res) => {
     const { filePath, targetDir } = req.body;
     const cleanPath = validateSafePath(filePath);
     const dest = validateSafePath(targetDir || path.posix.dirname(cleanPath));
-
-    let result;
-    if (cleanPath.endsWith('.zip')) {
-      result = await executeCommand('unzip', ['-o', cleanPath, '-d', dest], { timeoutMs: 60000 });
-    } else if (cleanPath.endsWith('.tar.bz2') || cleanPath.endsWith('.tbz2')) {
-      result = await executeCommand('tar', ['-xjvf', cleanPath, '-C', dest], { timeoutMs: 60000 });
-    } else {
-      result = await executeCommand('tar', ['-xvf', cleanPath, '-C', dest], { timeoutMs: 60000 });
+    if (!isSupportedArchivePath(cleanPath)) {
+      return res.status(400).json({ success: false, error: '不支持的压缩包格式' });
     }
-
-    if (!result.success) {
-      return res.status(400).json({ success: false, error: result.stderr || '解压操作失败' });
-    }
+    await extractArchiveSafely(cleanPath, dest);
 
     res.json({ success: true, message: '解压已成功完成' });
   } catch (err) {
@@ -561,19 +585,30 @@ router.post('/search', async (req, res) => {
   try {
     const { path: searchDir, keyword } = req.body;
     const cleanDir = validateSafePath(searchDir);
-    if (!keyword || typeof keyword !== 'string') {
+    const cleanKeyword = typeof keyword === 'string' ? keyword.trim() : '';
+    if (!cleanKeyword) {
       return res.status(400).json({ success: false, error: '搜索关键字不能为空' });
     }
+    if (cleanKeyword.length > 128 || /[\u0000\r\n]/.test(cleanKeyword)) {
+      return res.status(400).json({ success: false, error: '搜索关键字过长或包含非法控制字符' });
+    }
 
-    const cleanKey = `*${keyword.trim().replace(/[^\w\.\-\*\?]/g, '')}*`;
-    const result = await executeCommand('find', [cleanDir, '-maxdepth', '3', '-iname', cleanKey], { timeoutMs: 8000 });
+    const result = await executeCommand(
+      'find',
+      [cleanDir, '-maxdepth', '3', '-iname', `*${cleanKeyword}*`, '-printf', '%y\t%p\n'],
+      { timeoutMs: 8000, maxStdoutBytes: 512 * 1024 }
+    );
+    if (!result.success && !result.stdout) {
+      return res.status(400).json({ success: false, error: result.stderr || '搜索失败' });
+    }
 
     const lines = (result.stdout || '').trim().split('\n').filter(Boolean).slice(0, 80);
-    const matches = lines.map(p => ({
-      path: p,
-      name: path.posix.basename(p),
-      isDirectory: !path.posix.extname(p)
-    }));
+    const matches = lines.map((line) => {
+      const separator = line.indexOf('\t');
+      const type = separator >= 0 ? line.slice(0, separator) : '';
+      const matchPath = separator >= 0 ? line.slice(separator + 1) : line;
+      return { path: matchPath, name: path.posix.basename(matchPath), isDirectory: type === 'd' };
+    });
 
     res.json({ success: true, results: matches });
   } catch (err) {
