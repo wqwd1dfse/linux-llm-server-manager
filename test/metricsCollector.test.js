@@ -88,11 +88,14 @@ test('MetricsCollector: stop remains final while an in-flight collection finishe
     return null;
   };
 
-  collector.start(0);
+  // Start the scheduler, but invoke the collection directly so the test does
+  // not depend on an unref'ed timer keeping Node's test event loop alive.
+  collector.start(60_000);
+  const pendingCollection = collector.collect();
   await started;
   collector.stop();
   releaseCollection();
-  await new Promise((resolve) => setImmediate(resolve));
+  await pendingCollection;
 
   assert.equal(collector.running, false);
   assert.equal(collector.timer, null);
