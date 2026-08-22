@@ -1,5 +1,7 @@
 // Large Language Model (LLM) Console & Hugging Face Hub Manager
 
+const llmText = (zh, en) => window.localize ? window.localize(zh, en) : en;
+
 let currentLlmStatus = null;
 let chatHistory = [];
 let isGenerating = false;
@@ -33,6 +35,15 @@ window.initLLM = function () {
 
   startLlmPolling();
 };
+
+window.addEventListener('languagechange', () => {
+  if (window.currentView !== 'llm') return;
+  if (currentLlmStatus) renderLLMStatus(currentLlmStatus);
+  loadLocalModelsList();
+  loadDownloadTasks(false);
+  if (document.querySelector('.hf-model-card')) triggerHFSearch();
+  updateLlmMemoryEstimate();
+});
 
 function startLlmPolling() {
   if (llmPollingTimer) clearTimeout(llmPollingTimer);
@@ -166,11 +177,11 @@ function renderSlots(slots) {
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <span style="font-family: var(--font-mono); font-size: 11px; font-weight: 600;">Slot #${window.escapeHtml(s.id)}</span>
           <span style="font-size: 10px; color: ${isBusy ? 'var(--perf-yellow)' : 'var(--perf-green)'}; font-weight: 600;">
-            ${isBusy ? '⚡ 正在生成' : '● 空闲待命'}
+            ${isBusy ? llmText('⚡ 正在生成', '⚡ Generating') : llmText('● 空闲待命', '● Idle')}
           </span>
         </div>
         <div style="font-size: 10px; color: var(--win-text-secondary); margin-top: 2px;">
-          上下文: ${window.escapeHtml(s.n_ctx || s.n_past || 0)} tokens | 提示词缓存: ${window.escapeHtml(s.n_prompt_tokens || 0)}
+          ${llmText('上下文', 'Context')}: ${window.escapeHtml(s.n_ctx || s.n_past || 0)} tokens | ${llmText('提示词缓存', 'Prompt cache')}: ${window.escapeHtml(s.n_prompt_tokens || 0)}
         </div>
       </div>
     `;
@@ -194,7 +205,7 @@ async function loadLocalModelsList() {
     }
 
     if (diskText && disk) {
-      diskText.innerText = `存储空间: 已用 ${disk.used} / 总计 ${disk.total} (剩余 ${disk.free} 可用)`;
+      diskText.innerText = llmText('存储空间: 已用 ', 'Storage: ') + disk.used + llmText(' / 总计 ', ' used / ') + disk.total + llmText(' (剩余 ', ' total (') + disk.free + llmText(' 可用)', ' available)');
     }
     if (diskBar && disk) {
       const pct = parseInt(disk.percent.replace('%', ''), 10) || 0;
@@ -331,7 +342,7 @@ async function loadLocalModelsList() {
     });
 
   } catch (err) {
-    if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--perf-red); padding: 20px;">加载模型列表失败: ${window.escapeHtml(err.message)}</td></tr>`;
+    if (tbody) tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--perf-red); padding: 20px;">' + llmText('加载模型列表失败: ', 'Failed to load models: ') + window.escapeHtml(err.message) + '</td></tr>';
   }
 }
 
@@ -497,7 +508,7 @@ async function searchHFModels(query, sort = 'downloads') {
         <div style="grid-column: 1/-1; text-align: center; color: var(--win-text-muted); padding: 50px 20px;">
           <div style="font-size: 32px; margin-bottom: 8px;">📦</div>
           <div style="font-weight: 600;">未搜索到匹配的模型</div>
-          <div style="font-size: 11px; margin-top: 4px;">建议尝试输入更通用的关键词（如 Qwen2.5, DeepSeek, Llama, GGUF）</div>
+          <div style="font-size: 11px; margin-top: 4px;">${llmText('建议尝试输入更通用的关键词（如 Qwen2.5, DeepSeek, Llama, GGUF）', 'Try a broader search term, such as Qwen2.5, DeepSeek, Llama, or GGUF.')}</div>
         </div>
       `;
       return;
@@ -524,8 +535,8 @@ async function searchHFModels(query, sort = 'downloads') {
 
         <div style="margin-top: 12px; border-top: 1px dashed var(--win-border); padding-top: 8px;">
           <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--win-text-secondary);">
-            <span>⬇️ ${(m.downloads || 0).toLocaleString()} 下载</span>
-            <span>❤️ ${(m.likes || 0).toLocaleString()} 点赞</span>
+            <span>⬇️ ${(m.downloads || 0).toLocaleString()} ${llmText('下载', 'downloads')}</span>
+            <span>❤️ ${(m.likes || 0).toLocaleString()} ${llmText('点赞', 'likes')}</span>
           </div>
 
           <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center;">
@@ -1100,10 +1111,10 @@ async function handleSendMessage() {
     const totalSec = ((Date.now() - startTime) / 1000).toFixed(2);
     const avgTps = totalSec > 0 ? (tokenCount / totalSec).toFixed(1) : '--';
     if (speedBadge) {
-      speedBadge.innerText = `⚡ 平均 ${avgTps} tok/s | 总耗时 ${totalSec}s | ${tokenCount} tokens`;
+      speedBadge.innerText = '⚡ ' + llmText('平均 ', 'Average ') + avgTps + ' tok/s' + llmText(' | 总耗时 ', ' | Total ') + totalSec + 's | ' + tokenCount + ' tokens';
     }
     const tpsEl = document.getElementById('chat-token-speed');
-    if (tpsEl) tpsEl.innerText = `${avgTps} t/s (平均)`;
+    if (tpsEl) tpsEl.innerText = avgTps + ' t/s ' + llmText('(平均)', '(average)');
 
   } catch (err) {
     if (err.name === 'AbortError') {
@@ -1195,10 +1206,10 @@ function formatDuration(milliseconds) {
   const days = Math.floor(totalSeconds / 86400);
   const hours = Math.floor((totalSeconds % 86400) / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
-  if (days) return `${days}天 ${hours}小时`;
-  if (hours) return `${hours}小时 ${minutes}分`;
-  if (minutes) return `${minutes}分 ${totalSeconds % 60}秒`;
-  return `${totalSeconds}秒`;
+  if (days) return days + llmText('天 ', 'd ') + hours + llmText('小时', 'h');
+  if (hours) return hours + llmText('小时 ', 'h ') + minutes + llmText('分', 'm');
+  if (minutes) return minutes + llmText('分 ', 'm ') + (totalSeconds % 60) + llmText('秒', 's');
+  return totalSeconds + llmText('秒', 's');
 }
 
 function setLaunchModelSize(sizeBytes) {
@@ -1264,8 +1275,8 @@ function updateLlmMemoryEstimate() {
   const estimateGb = modelGb > 0 ? modelGb * 1.08 + kvGb + runtimeGb : kvGb + runtimeGb;
 
   valueBox.innerText = modelGb > 0
-    ? `约 ${estimateGb.toFixed(1)} GB（模型 ${modelGb.toFixed(1)} GB + KV/缓冲约 ${(kvGb + runtimeGb).toFixed(1)} GB）`
-    : `模型大小未知；KV Cache 与运行缓冲约 ${estimateGb.toFixed(1)} GB`;
+    ? llmText('约 ', 'Approx. ') + estimateGb.toFixed(1) + llmText(' GB（模型 ', ' GB (model ') + modelGb.toFixed(1) + llmText(' GB + KV/缓冲约 ', ' GB + KV/buffers approx. ') + (kvGb + runtimeGb).toFixed(1) + ' GB' + llmText('）', ')')
+    : llmText('模型大小未知；KV Cache 与运行缓冲约 ', 'Model size unknown; KV cache and runtime buffers approx. ') + estimateGb.toFixed(1) + ' GB';
 }
 
 function setupLLMLaunchEnhancements() {

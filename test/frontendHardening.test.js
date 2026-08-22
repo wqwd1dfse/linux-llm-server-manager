@@ -119,6 +119,8 @@ test('Internationalization: English defaults and language switching preserve nes
   const i18n = read('public/js/i18n.js');
   const catalog = read('public/js/i18nCatalog.js');
   const settings = read('public/js/settings.js');
+  const dashboard = read('public/js/dashboard.js');
+  const llm = read('public/js/llm.js');
   const englishReadme = read('README.md');
   const chineseReadme = read('README.zh-CN.md');
 
@@ -129,6 +131,13 @@ test('Internationalization: English defaults and language switching preserve nes
   assert.doesNotMatch(settings, /getElementById\('setting-lang-select'\)\?\.addEventListener\('change'/);
   assert.match(i18n, /setElementTextPreservingChildren/);
   assert.match(i18n, /MutationObserver/);
+  assert.match(i18n, /observer\.disconnect\(\)/);
+  assert.match(i18n, /queueMicrotask/);
+  assert.match(dashboard, /dashboardText/);
+  assert.match(dashboard, /diskDevicesBody\.replaceChildren/);
+  assert.match(llm, /llmText/);
+  assert.match(llm, /addEventListener\('languagechange'/);
+  assert.match(shellHtml, /id="disk-devices-body"/);
   assert.doesNotMatch(i18n, /innerText\s*=\s*trans/);
   assert.match(catalog, /Linux Server Manager/);
   assert.match(englishReadme, /\[简体中文\]\(README\.zh-CN\.md\)/);

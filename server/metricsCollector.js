@@ -1,5 +1,224 @@
 import { executeCommand, getConnectionStatus } from './sshManager.js';
 import { getConfig } from './config.js';
+export const METRICS_SHELL = 'bash';
+
+const GPU_VENDOR_BY_ID = Object.freeze({
+  '0x1002': 'AMD',
+  '0x10de': 'NVIDIA',
+  '0x8086': 'Intel'
+});
+
+function nullableNumber(value) {
+  if (value === null || value === undefined) return null;
+  const normalized = String(value).trim();
+  if (!normalized || /^(n\/a|not supported|unknown|-)$/i.test(normalized)) return null;
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizePciSlot(value) {
+  const slot = String(value || '').trim().toLowerCase();
+  const match = slot.match(/([0-9a-f]{2}:[0-9a-f]{2}\.[0-7])$/);
+  return match ? match[1] : slot;
+}
+
+function gpuVendor(vendorId, description = '', driver = '') {
+  const normalizedId = String(vendorId || '').trim().toLowerCase();
+  if (GPU_VENDOR_BY_ID[normalizedId]) return GPU_VENDOR_BY_ID[normalizedId];
+
+  const haystack = String(description) + ' ' + String(driver);
+  if (/nvidia/i.test(haystack)) return 'NVIDIA';
+  if (/(amd|ati|amdgpu|radeon)/i.test(haystack)) return 'AMD';
+  if (/(intel|i915|\bxe\b)/i.test(haystack)) return 'Intel';
+  return 'Generic';
+}
+
+function cleanGpuDescription(description, fallback) {
+  const cleaned = String(description || '')
+    .replace(/^(VGA compatible controller|3D controller|Display controller|Processing accelerators?):\s*/i, '')
+    .trim();
+  return cleaned || fallback;
+}
+
+export function parseBlockDevices(lines = []) {
+  const blockLines = Array.isArray(lines) ? lines : [];
+  const jsonStart = blockLines.findIndex((line) => line.trim().startsWith('{'));
+
+  let rawDevices = [];
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(blockLines.slice(jsonStart).join('\n'));
+      rawDevices = Array.isArray(parsed.blockdevices) ? parsed.blockdevices : [];
+    } catch (_) {
+      rawDevices = [];
+    }
+  }
+
+  if (rawDevices.length === 0) {
+    rawDevices = blockLines
+      .filter((line) => line.startsWith('BLOCK_DEVICE:'))
+      .map((line) => {
+        const [name, devicePath, type, transport, size, model, serial, rotational, vendor] = line.slice('BLOCK_DEVICE:'.length).split('|');
+        return { name, path: devicePath, type, tran: transport, size, model, serial, rota: rotational, vendor };
+      });
+  }
+
+  return rawDevices
+    .filter((device) => String(device.type || '').toLowerCase() === 'disk')
+    .map((device) => {
+      const rotationalValue = device.rota;
+      const rotational = rotationalValue === null || rotationalValue === undefined || rotationalValue === ''
+        ? null
+        : rotationalValue === true || rotationalValue === 1 || String(rotationalValue) === '1';
+
+      return {
+        name: String(device.name || device.kname || '').trim(),
+        path: String(device.path || ('/dev/' + (device.kname || device.name || ''))).trim(),
+        type: 'disk',
+        transport: String(device.tran || '').trim().toLowerCase() || 'unknown',
+        size: Math.max(0, Number.parseInt(device.size, 10) || 0),
+        model: String(device.model || '').trim(),
+        vendor: String(device.vendor || '').trim(),
+        serial: String(device.serial || '').trim(),
+        rotational
+      };
+    })
+    .filter((device) => device.name);
+}
+
+export function parseGpuDevices(lines = []) {
+  const gpuLines = (Array.isArray(lines) ? lines : []).map((line) => line.trim()).filter(Boolean);
+  const devices = [];
+  const detectedSlots = new Set();
+
+  for (const line of gpuLines) {
+    if (!line.startsWith('NVIDIA_CSV:')) continue;
+    const parts = line.slice('NVIDIA_CSV:'.length).split(',').map((part) => part.trim());
+    if (parts.length < 11) continue;
+
+    const pciSlot = normalizePciSlot(parts[1]);
+    if (pciSlot) detectedSlots.add(pciSlot);
+    const memoryTotalMb = nullableNumber(parts[7]) || 0;
+    const memoryUsedMb = nullableNumber(parts[8]) || 0;
+    const powerDraw = nullableNumber(parts[10]);
+
+    devices.push({
+      index: parts[0],
+      pciSlot,
+      name: parts[2] || 'NVIDIA GPU',
+      driverVersion: parts[3] || 'NVIDIA driver',
+      temperature: nullableNumber(parts[4]),
+      utilizationGpu: nullableNumber(parts[5]),
+      utilizationMemory: nullableNumber(parts[6]),
+      memoryTotalMb,
+      memoryUsedMb,
+      memoryFreeMb: nullableNumber(parts[9]) ?? Math.max(0, memoryTotalMb - memoryUsedMb),
+      powerDraw: powerDraw !== null ? powerDraw + ' W' : 'N/A',
+      isDedicated: true,
+      vendor: 'NVIDIA'
+    });
+  }
+
+  for (const line of gpuLines) {
+    if (!line.startsWith('DRM_GPU:')) continue;
+    const parts = line.slice('DRM_GPU:'.length).split('|');
+    if (parts.length < 10) continue;
+
+    const [cardName, rawSlot, vendorId, deviceId, driver, busy, vramUsed, vramTotal, rawTemp, rawPower, ...descriptionParts] = parts;
+    const pciSlot = normalizePciSlot(rawSlot);
+    if (pciSlot && detectedSlots.has(pciSlot)) continue;
+
+    const description = descriptionParts.join('|').trim();
+    const vendor = gpuVendor(vendorId, description, driver);
+    const memoryTotalBytes = nullableNumber(vramTotal) || 0;
+    const memoryUsedBytes = nullableNumber(vramUsed) || 0;
+    const memoryTotalMb = Math.round(memoryTotalBytes / 1024 / 1024);
+    const memoryUsedMb = Math.round(memoryUsedBytes / 1024 / 1024);
+    const tempValue = nullableNumber(rawTemp);
+    const powerValue = nullableNumber(rawPower);
+    const isDedicated = vendor === 'NVIDIA' || vendor === 'AMD' || memoryTotalBytes > 0;
+    const fallbackName = vendor + ' GPU (' + (vendorId || 'unknown') + ':' + (deviceId || 'unknown') + ')';
+
+    devices.push({
+      index: cardName.replace(/^card/, '') || devices.length,
+      pciSlot,
+      name: cleanGpuDescription(description, fallbackName),
+      driverVersion: driver ? driver + ' (Linux DRM)' : 'Linux DRM',
+      temperature: tempValue !== null && tempValue > 1000 ? Math.round(tempValue / 100) / 10 : tempValue,
+      utilizationGpu: nullableNumber(busy),
+      utilizationMemory: memoryTotalBytes > 0 ? Math.round((memoryUsedBytes / memoryTotalBytes) * 100) : null,
+      memoryTotalMb,
+      memoryUsedMb,
+      memoryFreeMb: Math.max(0, memoryTotalMb - memoryUsedMb),
+      powerDraw: powerValue !== null && powerValue > 0 ? (powerValue / 1000000).toFixed(1) + ' W' : 'N/A',
+      isDedicated,
+      note: isDedicated ? 'Discrete GPU / display adapter' : 'Integrated GPU / display adapter',
+      vendor
+    });
+    if (pciSlot) detectedSlots.add(pciSlot);
+  }
+
+  for (const line of gpuLines) {
+    if (!line.startsWith('PCI_SYSFS:')) continue;
+    const [rawSlot, vendorId, deviceId, driver] = line.slice('PCI_SYSFS:'.length).split('|');
+    const pciSlot = normalizePciSlot(rawSlot);
+    if (pciSlot && detectedSlots.has(pciSlot)) continue;
+
+    const vendor = gpuVendor(vendorId, '', driver);
+    const isDedicated = vendor === 'NVIDIA' || vendor === 'AMD';
+    devices.push({
+      index: devices.length,
+      pciSlot,
+      name: vendor + ' GPU (' + (vendorId || 'unknown') + ':' + (deviceId || 'unknown') + ')',
+      driverVersion: driver ? driver + ' (Linux PCI)' : 'Linux PCI device',
+      temperature: null,
+      utilizationGpu: null,
+      utilizationMemory: null,
+      memoryTotalMb: 0,
+      memoryUsedMb: 0,
+      memoryFreeMb: 0,
+      powerDraw: 'N/A',
+      isDedicated,
+      note: isDedicated ? 'Discrete GPU / display adapter' : 'Integrated GPU / display adapter',
+      vendor
+    });
+    if (pciSlot) detectedSlots.add(pciSlot);
+  }
+  for (const line of gpuLines) {
+    if (!line.startsWith('PCI_DISPLAY:')) continue;
+    const pci = line.slice('PCI_DISPLAY:'.length).trim();
+    const slotMatch = pci.match(/^(\S+)\s+(.+)$/);
+    if (!slotMatch) continue;
+
+    const pciSlot = normalizePciSlot(slotMatch[1]);
+    if (pciSlot && detectedSlots.has(pciSlot)) continue;
+
+    const description = slotMatch[2];
+    const vendor = gpuVendor('', description, '');
+    const isDedicated = vendor === 'NVIDIA' || vendor === 'AMD';
+    devices.push({
+      index: devices.length,
+      pciSlot,
+      name: cleanGpuDescription(description, vendor + ' GPU'),
+      driverVersion: 'Linux PCI device',
+      temperature: null,
+      utilizationGpu: null,
+      utilizationMemory: null,
+      memoryTotalMb: 0,
+      memoryUsedMb: 0,
+      memoryFreeMb: 0,
+      powerDraw: 'N/A',
+      isDedicated,
+      note: isDedicated ? 'Discrete GPU / display adapter' : 'Integrated GPU / display adapter',
+      vendor
+    });
+    if (pciSlot) detectedSlots.add(pciSlot);
+  }
+
+  const vendors = new Set(devices.map((device) => device.vendor.toLowerCase()));
+  const type = devices.length === 0 ? 'none' : vendors.size === 1 ? [...vendors][0] : 'mixed';
+  return { type, hasGpu: devices.length > 0, devices };
+}
 
 class MetricsCollector {
   constructor() {
@@ -173,32 +392,61 @@ class MetricsCollector {
         echo "---DISKSTATS---"
         cat /proc/diskstats 2>/dev/null || true
 
+        echo "---BLOCK_DEVICES---"
+        if command -v lsblk >/dev/null 2>&1; then
+          echo "LSBLK_JSON:"
+          lsblk -J -b -d -o NAME,KNAME,PATH,TYPE,TRAN,SIZE,MODEL,SERIAL,ROTA,VENDOR 2>/dev/null || true
+        fi
+
         echo "---NET---"
         cat /proc/net/dev
 
         echo "---GPU---"
         if command -v nvidia-smi >/dev/null 2>&1; then
-          nvidia-smi --query-gpu=index,name,driver_version,temperature.gpu,utilization.gpu,utilization.memory,memory.total,memory.used,memory.free,power.draw --format=csv,noheader,nounits 2>/dev/null || echo "NO_NVIDIA"
-        else
-          echo "NO_NVIDIA"
+          nvidia-smi --query-gpu=index,pci.bus_id,name,driver_version,temperature.gpu,utilization.gpu,utilization.memory,memory.total,memory.used,memory.free,power.draw --format=csv,noheader,nounits 2>/dev/null | sed 's/^/NVIDIA_CSV:/' || true
         fi
-        for dev in /sys/class/drm/card[0-9]/device; do
-          if [ -d "$dev" ] && [ -f "$dev/gpu_busy_percent" -o -f "$dev/mem_info_vram_used" ]; then
-            echo "AMD_SYSFS_GPU:"
-            echo "BUSY: $(cat $dev/gpu_busy_percent 2>/dev/null || echo '')"
-            echo "TEMP: $(cat $dev/hwmon/hwmon*/temp1_input 2>/dev/null | head -n 1 || echo '')"
-            echo "VRAM_USED: $(cat $dev/mem_info_vram_used 2>/dev/null || echo '')"
-            echo "VRAM_TOTAL: $(cat $dev/mem_info_vram_total 2>/dev/null || echo '')"
-            echo "POWER: $(cat $dev/hwmon/hwmon*/power1_average 2>/dev/null | head -n 1 || echo '')"
+        for card in /sys/class/drm/card[0-9]*; do
+          [ -e "$card/device" ] || continue
+          card_name="\${card##*/}"
+          case "$card_name" in card*[!0-9]*) continue ;; esac
+          device=$(readlink -f "$card/device" 2>/dev/null || true)
+          [ -n "$device" ] || continue
+          slot="\${device##*/}"
+          vendor=$(cat "$card/device/vendor" 2>/dev/null || echo '')
+          device_id=$(cat "$card/device/device" 2>/dev/null || echo '')
+          driver_path=$(readlink -f "$card/device/driver" 2>/dev/null || true)
+          driver="\${driver_path##*/}"
+          busy=$(cat "$card/device/gpu_busy_percent" 2>/dev/null || echo '')
+          vram_used=$(cat "$card/device/mem_info_vram_used" 2>/dev/null || echo '')
+          vram_total=$(cat "$card/device/mem_info_vram_total" 2>/dev/null || echo '')
+          temp=$(cat "$card/device"/hwmon/hwmon*/temp1_input 2>/dev/null | head -n 1 || true)
+          power=$(cat "$card/device"/hwmon/hwmon*/power1_average 2>/dev/null | head -n 1 || true)
+          description=""
+          if command -v lspci >/dev/null 2>&1; then
+            description=$(lspci -s "$slot" 2>/dev/null | sed -E 's/^[^ ]+[[:space:]]+//' | tr '|\n' '  ' | xargs || true)
           fi
+          echo "DRM_GPU:$card_name|$slot|$vendor|$device_id|$driver|$busy|$vram_used|$vram_total|$temp|$power|$description"
         done
-        lspci 2>/dev/null | grep -i -E 'vga|3d|display' || echo "NO_PCI_DISPLAY"
+        for pci in /sys/bus/pci/devices/*; do
+          [ -e "$pci" ] || continue
+          class=$(cat "$pci/class" 2>/dev/null || echo '')
+          case "$class" in 0x0300*|0x0302*|0x0380*|0x1200*) ;; *) continue ;; esac
+          slot="\${pci##*/}"
+          vendor=$(cat "$pci/vendor" 2>/dev/null || echo '')
+          device_id=$(cat "$pci/device" 2>/dev/null || echo '')
+          driver_path=$(readlink -f "$pci/driver" 2>/dev/null || true)
+          driver="\${driver_path##*/}"
+          echo "PCI_SYSFS:$slot|$vendor|$device_id|$driver|$class"
+        done
+        if command -v lspci >/dev/null 2>&1; then
+          lspci -D 2>/dev/null | grep -i -E 'vga|3d|display|processing accelerators' | sed 's/^/PCI_DISPLAY:/' || true
+        fi
 
         echo "---TOP_CPU_MEM---"
         ps -eo pid,user,%cpu,%mem,comm --sort=-%cpu | head -n 10
       `;
 
-      const result = await executeCommand('sh', ['-c', script], { timeoutMs: 8000 });
+      const result = await executeCommand(METRICS_SHELL, ['-c', script], { timeoutMs: 8000 });
       if (!result.success && !result.stdout) {
         throw new Error(result.stderr || '指标采集命令执行失败');
       }
@@ -390,6 +638,8 @@ class MetricsCollector {
     }
 
     const overallDiskPercent = diskTotalSum > 0 ? Math.round((diskUsedSum / diskTotalSum) * 1000) / 10 : 0;
+    const blockDevices = parseBlockDevices(sections['BLOCK_DEVICES'] || []);
+    const physicalDeviceNames = new Set(blockDevices.map((device) => device.name));
 
     // Disk I/O Speeds
     const diskstatLines = sections['DISKSTATS'] || [];
@@ -400,7 +650,7 @@ class MetricsCollector {
       const p = line.trim().split(/\s+/);
       if (p.length >= 14) {
         const devName = p[2];
-        if (/^(sd[a-z]|nvme[0-9]+n[0-9]+|vd[a-z]|hd[a-z])$/.test(devName)) {
+        if (physicalDeviceNames.has(devName) || (physicalDeviceNames.size === 0 && /^(sd[a-z]+|nvme[0-9]+n[0-9]+|vd[a-z]+|xvd[a-z]+|hd[a-z]+|mmcblk[0-9]+|md[0-9]+)$/.test(devName))) {
           totalReadSectors += parseInt(p[5], 10) || 0;
           totalWriteSectors += parseInt(p[9], 10) || 0;
         }
@@ -456,121 +706,8 @@ class MetricsCollector {
     }
     this.lastNetStats = { time: now, rx: totalRxBytes, tx: totalTxBytes };
 
-    // Parse GPU
-    const gpuLines = (sections['GPU'] || []).filter(Boolean);
-    const gpus = [];
-    let gpuType = 'none';
-
-    const hasNvidia = gpuLines.some(l => !l.includes('NO_NVIDIA') && l.includes(','));
-    if (hasNvidia) {
-      gpuType = 'nvidia';
-      for (const line of gpuLines) {
-        if (line.includes('NO_') || line.includes('AMD_') || line.includes('BUSY:') || line.includes('TEMP:') || line.includes('VRAM_') || line.includes('POWER:')) continue;
-        const parts = line.split(',').map(s => s.trim());
-        if (parts.length >= 8) {
-          gpus.push({
-            index: parts[0],
-            name: parts[1],
-            driverVersion: parts[2],
-            temperature: parseFloat(parts[3]) || null,
-            utilizationGpu: parseFloat(parts[4]) || 0,
-            utilizationMemory: parseFloat(parts[5]) || 0,
-            memoryTotalMb: parseFloat(parts[6]) || 0,
-            memoryUsedMb: parseFloat(parts[7]) || 0,
-            memoryFreeMb: parseFloat(parts[8]) || 0,
-            powerDraw: parts[9] ? `${parts[9]} W` : 'N/A',
-            isDedicated: true,
-            vendor: 'NVIDIA'
-          });
-        }
-      }
-    }
-
-    const hasAmdSysfs = gpuLines.some(l => l.includes('AMD_SYSFS_GPU'));
-    const pciLines = gpuLines.filter(l => !l.includes('NO_NVIDIA') && !l.includes('NO_PCI_DISPLAY') && !l.startsWith('AMD_') && !l.startsWith('BUSY:') && !l.startsWith('TEMP:') && !l.startsWith('VRAM_') && !l.startsWith('POWER:'));
-
-    if (hasAmdSysfs) {
-      gpuType = 'amd';
-      let busy = 0;
-      let temp = null;
-      let vramUsed = 0;
-      let vramTotal = 0;
-      let power = 'N/A';
-
-      for (const l of gpuLines) {
-        if (l.startsWith('BUSY:')) {
-          const val = l.replace('BUSY:', '').trim();
-          busy = val ? parseFloat(val) : 0;
-        }
-        if (l.startsWith('TEMP:')) {
-          const val = l.replace('TEMP:', '').trim();
-          if (val) {
-            const rawTemp = parseFloat(val);
-            temp = rawTemp > 1000 ? Math.round(rawTemp / 1000) : rawTemp;
-          }
-        }
-        if (l.startsWith('VRAM_USED:')) {
-          const val = l.replace('VRAM_USED:', '').trim();
-          if (val) vramUsed = Math.round(parseFloat(val) / 1024 / 1024);
-        }
-        if (l.startsWith('VRAM_TOTAL:')) {
-          const val = l.replace('VRAM_TOTAL:', '').trim();
-          if (val) vramTotal = Math.round(parseFloat(val) / 1024 / 1024);
-        }
-        if (l.startsWith('POWER:')) {
-          const val = l.replace('POWER:', '').trim();
-          if (val) {
-            const microwatts = parseFloat(val) || 0;
-            if (microwatts > 0) power = `${(microwatts / 1000000).toFixed(1)} W`;
-          }
-        }
-      }
-
-      let pciName = 'AMD GPU';
-      if (pciLines.length > 0) {
-        pciName = pciLines[0].replace(/^[0-9a-f:.]+\s+(VGA compatible controller|3D controller|Display controller):\s*/i, '').trim();
-      }
-      if (/MI50|Vega 20|Pro VII/i.test(pciName)) pciName = 'AMD GPU';
-
-      const vramPercent = vramTotal > 0 ? Math.round((vramUsed / vramTotal) * 100) : 0;
-
-      gpus.push({
-        index: 0,
-        name: pciName,
-        driverVersion: 'AMD ROCm / AMDGPU Kernel Driver',
-        temperature: temp,
-        utilizationGpu: busy,
-        utilizationMemory: vramPercent,
-        memoryTotalMb: vramTotal,
-        memoryUsedMb: vramUsed,
-        memoryFreeMb: Math.max(0, vramTotal - vramUsed),
-        powerDraw: power,
-        isDedicated: true,
-        vendor: 'AMD'
-      });
-    }
-
-    if (gpus.length === 0 && pciLines.length > 0) {
-      gpuType = 'integrated_or_virtual';
-      pciLines.forEach((pci, idx) => {
-        let cleanName = pci.replace(/^[0-9a-f:.]+\s+(VGA compatible controller|3D controller|Display controller):\s*/i, '').trim();
-        gpus.push({
-          index: idx,
-          name: cleanName || '通用图形显示设备 (GPU / Display Adapter)',
-          driverVersion: 'Linux DRM / Kernel 内核驱动',
-          temperature: null,
-          utilizationGpu: 0,
-          utilizationMemory: 0,
-          memoryTotalMb: 0,
-          memoryUsedMb: 0,
-          memoryFreeMb: 0,
-          isDedicated: false,
-          note: '集成显卡 / 虚拟机显示适配器',
-          vendor: 'Generic'
-        });
-      });
-    }
-
+    // Parse GPU inventory and telemetry from NVIDIA, DRM/sysfs, then PCI fallbacks.
+    const gpu = parseGpuDevices(sections['GPU'] || []);
     // Top Processes
     const topProcesses = [];
     const topLines = sections['TOP_CPU_MEM'] || [];
@@ -624,13 +761,10 @@ class MetricsCollector {
         used: diskUsedSum,
         readSpeed: diskReadSpeed,
         writeSpeed: diskWriteSpeed,
-        partitions: disks
+        partitions: disks,
+        devices: blockDevices
       },
-      gpu: {
-        type: gpuType,
-        hasGpu: gpus.length > 0,
-        devices: gpus
-      },
+      gpu,
       network: {
         rxSpeed,
         txSpeed,

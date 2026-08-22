@@ -24,6 +24,13 @@ window.initFan = function () {
   });
 };
 
+window.addEventListener('languagechange', () => {
+  if (window.currentView !== 'fan') return;
+  updatePresetButtonsUI(activePresetMode);
+  loadFanStatus(false);
+  loadFanHistory(currentFanHistoryRange, false);
+});
+
 function startFanPolling() {
   if (fanPollingTimer) clearTimeout(fanPollingTimer);
   const poll = async () => {
@@ -189,8 +196,8 @@ function updatePresetButtonsUI(mode) {
 
 window.setPresetMode = async function (mode) {
   activePresetMode = mode;
-  let tip = mode === 'full' ? '100% 全速暴力散热' : mode === 'quiet' ? '全机静音待机' : '智能自适应自动温控';
-  window.toast(`正在切换至: ${tip}...`, 'info');
+  const tip = mode === 'full' ? fanText('100% 全速暴力散热', '100% full-speed cooling') : mode === 'quiet' ? fanText('全机静音待机', 'Quiet standby') : fanText('智能自适应自动温控', 'Adaptive automatic thermal control');
+  window.toast(fanText('正在切换至: ', 'Switching to: ') + tip + '...', 'info');
   updatePresetButtonsUI(mode);
 
   try {
@@ -347,10 +354,10 @@ async function loadFanHistory(range = '5m', showToast = false) {
     }
 
     if (stats) {
-      if (stats.cpu) setText('stat-cpu-summary', stats.cpu.min !== null ? `最小: ${stats.cpu.min}°C | 均值: ${stats.cpu.avg}°C | 最大: ${stats.cpu.max}°C` : 'N/A');
-      if (stats.gpuJunction) setText('stat-gpuj-summary', stats.gpuJunction.min !== null ? `最小: ${stats.gpuJunction.min}°C | 均值: ${stats.gpuJunction.avg}°C | 最大: ${stats.gpuJunction.max}°C` : 'N/A');
-      if (stats.gpuPower) setText('stat-gpup-summary', stats.gpuPower.min !== null ? `最小: ${stats.gpuPower.min}W | 均值: ${stats.gpuPower.avg}W | 最大: ${stats.gpuPower.max}W` : 'N/A');
-      if (stats.fanRpm) setText('stat-fan-summary', stats.fanRpm.current !== null ? `当前: ${(stats.fanRpm.current).toLocaleString()} RPM | 均值: ${(stats.fanRpm.avg).toLocaleString()} RPM` : 'N/A');
+      if (stats.cpu) setText('stat-cpu-summary', stats.cpu.min !== null ? fanText('最小: ', 'Min: ') + stats.cpu.min + '°C' + fanText(' | 均值: ', ' | Avg: ') + stats.cpu.avg + '°C' + fanText(' | 最大: ', ' | Max: ') + stats.cpu.max + '°C' : 'N/A');
+      if (stats.gpuJunction) setText('stat-gpuj-summary', stats.gpuJunction.min !== null ? fanText('最小: ', 'Min: ') + stats.gpuJunction.min + '°C' + fanText(' | 均值: ', ' | Avg: ') + stats.gpuJunction.avg + '°C' + fanText(' | 最大: ', ' | Max: ') + stats.gpuJunction.max + '°C' : 'N/A');
+      if (stats.gpuPower) setText('stat-gpup-summary', stats.gpuPower.min !== null ? fanText('最小: ', 'Min: ') + stats.gpuPower.min + 'W' + fanText(' | 均值: ', ' | Avg: ') + stats.gpuPower.avg + 'W' + fanText(' | 最大: ', ' | Max: ') + stats.gpuPower.max + 'W' : 'N/A');
+      if (stats.fanRpm) setText('stat-fan-summary', stats.fanRpm.current !== null ? fanText('当前: ', 'Current: ') + stats.fanRpm.current.toLocaleString() + ' RPM' + fanText(' | 均值: ', ' | Avg: ') + stats.fanRpm.avg.toLocaleString() + ' RPM' : 'N/A');
     }
 
     drawFanHistoryCanvas();

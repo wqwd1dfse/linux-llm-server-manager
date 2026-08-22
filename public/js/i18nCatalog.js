@@ -572,4 +572,14 @@ export const staticPhrasePairs = [
   ["请输入要执行的指令", "Enter a command to run"],
   ["✅ 系统与全局偏好设置已成功保存！", "✅ Preferences saved successfully!"],
   ["关闭弹窗", "Close dialog"],
-  ["管理界面组件加载失败，请刷新页面；若问题持续，请检查服务静态文件是否完整。", "The management interface failed to load. Refresh the page; if the issue persists, verify the static application files."]];
+  ["管理界面组件加载失败，请刷新页面；若问题持续，请检查服务静态文件是否完整。", "The management interface failed to load. Refresh the page; if the issue persists, verify the static application files."],
+  ["物理磁盘设备", "Physical disk devices"],
+  ["设备", "Device"],
+  ["型号", "Model"],
+  ["传输总线", "Transport"],
+  ["容量", "Capacity"],
+  ["介质类型", "Media type"],
+  ["序列号", "Serial number"],
+  ["暂无物理磁盘数据", "No physical disk data"],
+  ["未检测到物理磁盘设备", "No physical disk devices detected"],
+  ["未知", "Unknown"]];

@@ -1,9 +1,15 @@
 // Scripts & DevOps Toolbox Execution
 
+const scriptsText = (zh, en) => window.localize ? window.localize(zh, en) : en;
+
 window.initScripts = function () {
   loadPresets();
   setupScriptEvents();
 };
+
+window.addEventListener('languagechange', () => {
+  if (window.currentView === 'scripts') loadPresets();
+});
 
 async function loadPresets() {
   const container = document.getElementById('scripts-list-container');
@@ -74,7 +80,7 @@ async function loadPresets() {
       container.appendChild(card);
     }
   } catch (err) {
-    container.innerHTML = `<div style="color: var(--perf-red); padding: 10px;">无法加载预设脚本: ${window.escapeHtml(err.message)}</div>`;
+    container.innerHTML = '<div style="color: var(--perf-red); padding: 10px;">' + scriptsText('无法加载预设脚本: ', 'Failed to load preset scripts: ') + window.escapeHtml(err.message) + '</div>';
   }
 }
 
@@ -108,7 +114,7 @@ async function executeScriptRequest(payload) {
     }
   } catch (err) {
     if (outputEl) {
-      outputEl.textContent = `[执行失败]: ${err.message}`;
+    outputEl.textContent = scriptsText('[执行失败]: ', '[Execution failed]: ') + err.message;
     }
   }
 }

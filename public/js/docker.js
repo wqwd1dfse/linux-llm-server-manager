@@ -1,6 +1,7 @@
 // Docker Container & Image Management
 
 let currentViewingContainerId = null;
+const dockerText = (zh, en) => window.localize ? window.localize(zh, en) : en;
 
 window.initDocker = function () {
   loadDockerStatus();
@@ -23,6 +24,13 @@ window.initDocker = function () {
     }
   });
 };
+
+window.addEventListener('languagechange', () => {
+  if (window.currentView !== 'docker') return;
+  loadDockerStatus();
+  loadDockerContainers();
+  loadDockerImages();
+});
 
 async function loadDockerStatus() {
   const badge = document.getElementById('docker-version-badge');
@@ -140,7 +148,7 @@ async function loadDockerContainers() {
       tbody.appendChild(tr);
     }
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--perf-red); padding: 30px;">获取容器列表失败: ${window.escapeHtml(err.message)}</td></tr>`;
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--perf-red); padding: 30px;">' + dockerText('获取容器列表失败: ', 'Failed to load containers: ') + window.escapeHtml(err.message) + '</td></tr>';
   }
 }
 

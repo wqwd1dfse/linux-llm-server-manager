@@ -307,6 +307,8 @@ let currentLang = normalizeLanguage(localStorage.getItem('win-lang'));
 let initialized = false;
 let translating = false;
 let observer = null;
+let translationScheduled = false;
+const pendingTranslationRoots = new Set();
 
 function normalizeLanguage(lang) {
   return SUPPORTED_LANGUAGES.has(lang) ? lang : DEFAULT_LANGUAGE;
@@ -359,7 +361,7 @@ function translateNodeValue(node) {
   const parent = node.parentElement;
   const dynamicUi = parent && (
     parent.matches('button, option, [role="status"]') ||
-    /^(status|fan-|llm-|docker-|server-|titlebar-|address-)/.test(parent.id || '')
+    /^(status|fan-|llm-|docker-|server-|titlebar-|address-|cpu-|gpu-|ram-|ssd-|service-|script-|file-|terminal-)/.test(parent.id || '')
   );
   return dynamicUi ? localizeText(node.textContent) : node.textContent;
 }
@@ -425,6 +427,9 @@ export function applyTranslations(root = document) {
   if (translating) return;
   translating = true;
 
+  const shouldResumeObserver = Boolean(observer && document.body);
+  if (shouldResumeObserver) observer.disconnect();
+
   try {
     document.documentElement.lang = currentLang === 'en-US' ? 'en' : 'zh-CN';
     document.title = localize('Linux 服务器管理控制台', 'Linux Server Manager');
@@ -453,7 +458,28 @@ export function applyTranslations(root = document) {
     if (langSelect) langSelect.value = currentLang;
   } finally {
     translating = false;
+    if (shouldResumeObserver) {
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    }
   }
+}
+
+function queueTranslation(root) {
+  if (!root || translating) return;
+  pendingTranslationRoots.add(root);
+  if (translationScheduled) return;
+
+  translationScheduled = true;
+  queueMicrotask(() => {
+    translationScheduled = false;
+    const candidates = [...pendingTranslationRoots].filter((node) => node?.isConnected);
+    pendingTranslationRoots.clear();
+
+    const roots = candidates.filter((node, index) => (
+      !candidates.some((other, otherIndex) => otherIndex !== index && other.contains?.(node))
+    ));
+    for (const root of roots) applyTranslations(root);
+  });
 }
 
 function startObserver() {
@@ -461,19 +487,21 @@ function startObserver() {
 
   observer = new MutationObserver((mutations) => {
     if (translating) return;
+
     for (const mutation of mutations) {
       if (mutation.type === 'characterData') {
         const node = mutation.target;
         if (!shouldSkipTextNode(node) && !node.parentElement?.closest('[data-i18n]')) {
-          const translated = translateNodeValue(node);
-          if (translated !== node.textContent) node.textContent = translated;
+          queueTranslation(node.parentElement);
         }
         continue;
       }
 
       for (const node of mutation.addedNodes) {
-        if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) {
-          applyTranslations(node.nodeType === Node.TEXT_NODE ? node.parentElement : node);
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          queueTranslation(node);
+        } else if (node.nodeType === Node.TEXT_NODE) {
+          queueTranslation(node.parentElement);
         }
       }
     }
@@ -481,7 +509,6 @@ function startObserver() {
 
   observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 }
-
 function wrapNativeDialogs() {
   if (window.__i18nDialogsWrapped) return;
   window.__i18nDialogsWrapped = true;
@@ -503,10 +530,11 @@ export function setLanguage(lang, options = {}) {
   localStorage.setItem('win-lang', normalized);
   applyTranslations();
 
-  window.dispatchEvent(new CustomEvent('languagechange', {
-    detail: { language: currentLang, previousLanguage }
-  }));
-
+  if (previousLanguage !== currentLang) {
+    window.dispatchEvent(new CustomEvent('languagechange', {
+      detail: { language: currentLang, previousLanguage }
+    }));
+  }
   if (options.announce !== false && previousLanguage !== currentLang && window.toast) {
     window.toast(localize('已切换至简体中文', 'Switched to English (US)'), 'success');
   }

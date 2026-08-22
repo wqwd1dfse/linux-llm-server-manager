@@ -1,6 +1,8 @@
 // Dedicated Hardware Monitors (CPU, GPU, RAM, SSD) & Telemetry
 
 let metricsWs = null;
+let latestMetricsData = null;
+const dashboardText = (zh, en) => window.localize ? window.localize(zh, en) : en;
 
 function formatBytes(bytes, decimals = 1) {
   if (!bytes || bytes === 0) return '0 B';
@@ -23,6 +25,10 @@ function formatSpeed(bytesPerSec) {
 window.initDashboard = function () {
   connectMetricsWs();
 };
+
+window.addEventListener('languagechange', () => {
+  if (latestMetricsData) updateMonitorsUI(latestMetricsData);
+});
 
 function connectMetricsWs() {
   if (metricsWs && metricsWs.readyState === WebSocket.OPEN) return;
@@ -58,6 +64,7 @@ function connectMetricsWs() {
 
 function updateMonitorsUI(data) {
   if (!data) return;
+  latestMetricsData = data;
   window.updateConnectionStatus(true, data.os?.uptimeFormatted);
 
   // 1. CPU Detailed Monitor
@@ -69,7 +76,7 @@ function updateMonitorsUI(data) {
 
   if (cpuVal) cpuVal.innerText = `${cpuPercent}%`;
   if (cpuModel) cpuModel.innerText = data.cpu?.model || 'Generic Linux CPU';
-  if (cpuSub) cpuSub.innerText = `${data.cpu?.cores || 1} 物理/逻辑核心 | 时钟速度: ${data.cpu?.frequency || '--'}`;
+  if (cpuSub) cpuSub.innerText = dashboardText(String(data.cpu?.cores || 1) + ' 物理/逻辑核心 | 时钟速度: ' + (data.cpu?.frequency || '--'), String(data.cpu?.cores || 1) + ' physical/logical cores | Clock: ' + (data.cpu?.frequency || '--'));
   if (cpuBar) {
     cpuBar.style.width = `${Math.max(cpuPercent, 2)}%`;
     cpuBar.className = `win-progress-bar ${cpuPercent > 85 ? 'red' : cpuPercent > 65 ? 'yellow' : 'green'}`;
@@ -77,7 +84,7 @@ function updateMonitorsUI(data) {
 
   // CPU Props
   setText('cpu-prop-model', data.cpu?.model || '--');
-  setText('cpu-prop-cores', `${data.cpu?.cores || 1} 核心`);
+  setText('cpu-prop-cores', String(data.cpu?.cores || 1) + ' ' + dashboardText('核心', 'cores'));
   setText('cpu-prop-freq', data.cpu?.frequency || '--');
   setText('cpu-prop-cache', data.cpu?.cache || 'N/A');
   setText('cpu-prop-arch', data.os?.arch || '--');
@@ -107,9 +114,9 @@ function updateMonitorsUI(data) {
     const firstGpu = data.gpu.devices[0];
 
     if (firstGpu.isDedicated) {
-      if (gpuVal) gpuVal.innerText = firstGpu.utilizationGpu !== null ? `${firstGpu.utilizationGpu}%` : '在线';
+      if (gpuVal) gpuVal.innerText = firstGpu.utilizationGpu !== null ? String(firstGpu.utilizationGpu) + '%' : dashboardText('在线', 'Online');
       if (gpuName) gpuName.innerText = firstGpu.name;
-      if (gpuSub) gpuSub.innerText = `显存: ${firstGpu.memoryUsedMb || '--'} / ${firstGpu.memoryTotalMb || '--'} MB | 驱动: ${firstGpu.driverVersion || 'Generic'}`;
+      if (gpuSub) gpuSub.innerText = 'VRAM: ' + (firstGpu.memoryUsedMb || '--') + ' / ' + (firstGpu.memoryTotalMb || '--') + ' MB | ' + dashboardText('驱动', 'Driver') + ': ' + (firstGpu.driverVersion || 'Generic');
 
       if (gpuContainer) {
         gpuContainer.innerHTML = data.gpu.devices.map(g => `
@@ -136,7 +143,7 @@ function updateMonitorsUI(data) {
         `).join('');
       }
     } else {
-      if (gpuVal) gpuVal.innerText = '正常';
+      if (gpuVal) gpuVal.innerText = dashboardText('正常', 'Healthy');
       if (gpuName) gpuName.innerText = firstGpu.name;
       if (gpuSub) gpuSub.innerText = `${firstGpu.note || '显示适配器'} | ${firstGpu.driverVersion || '--'}`;
 
@@ -152,9 +159,9 @@ function updateMonitorsUI(data) {
       }
     }
   } else {
-    if (gpuVal) gpuVal.innerText = '无独显';
-    if (gpuName) gpuName.innerText = '未检测到独立显卡 (Headless / 标准服务器)';
-    if (gpuSub) gpuSub.innerText = '可安装独立加速卡驱动后实时采集 GPU 算力指标';
+    if (gpuVal) gpuVal.innerText = dashboardText('无独显', 'No discrete GPU');
+    if (gpuName) gpuName.innerText = dashboardText('未检测到独立显卡 (Headless / 标准服务器)', 'No discrete GPU detected (headless / standard server)');
+    if (gpuSub) gpuSub.innerText = dashboardText('可安装独立加速卡驱动后实时采集 GPU 算力指标', 'Install an accelerator driver to collect live GPU telemetry');
     if (gpuContainer) {
       gpuContainer.innerHTML = `
         <div class="perf-card" style="padding: 24px; text-align: center; color: var(--win-text-secondary);">
@@ -174,7 +181,7 @@ function updateMonitorsUI(data) {
 
   if (ramVal) ramVal.innerText = `${memPercent}%`;
   if (ramUsage) ramUsage.innerText = `${formatBytes(data.memory?.used)} / ${formatBytes(data.memory?.total)}`;
-  if (ramAvail) ramAvail.innerText = `可用容量: ${formatBytes(data.memory?.available)}`;
+  if (ramAvail) ramAvail.innerText = dashboardText('可用容量: ', 'Available: ') + formatBytes(data.memory?.available);
   if (ramBar) {
     ramBar.style.width = `${Math.max(memPercent, 2)}%`;
     ramBar.className = `win-progress-bar ${memPercent > 85 ? 'red' : memPercent > 65 ? 'yellow' : 'green'}`;
@@ -207,9 +214,55 @@ function updateMonitorsUI(data) {
   // 4. SSD / Storage Detailed Monitor
   const readSpeed = data.disk?.readSpeed || 0;
   const writeSpeed = data.disk?.writeSpeed || 0;
-  setText('ssd-main-io', `读: ${formatSpeed(readSpeed)} | 写: ${formatSpeed(writeSpeed)}`);
+  setText('ssd-main-io', dashboardText('读: ', 'Read: ') + formatSpeed(readSpeed) + dashboardText(' | 写: ', ' | Write: ') + formatSpeed(writeSpeed));
   setText('ssd-main-total', `${formatBytes(data.disk?.used)} / ${formatBytes(data.disk?.total)} (${data.disk?.overallPercent || 0}%)`);
 
+  const diskDevicesBody = document.getElementById('disk-devices-body');
+  if (diskDevicesBody) {
+    diskDevicesBody.replaceChildren();
+    const devices = Array.isArray(data.disk?.devices) ? data.disk.devices : [];
+
+    if (devices.length === 0) {
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 6;
+      cell.style.textAlign = 'center';
+      cell.style.color = 'var(--win-text-muted)';
+      cell.textContent = dashboardText('未检测到物理磁盘设备', 'No physical disk devices detected');
+      row.appendChild(cell);
+      diskDevicesBody.appendChild(row);
+    } else {
+      for (const device of devices) {
+        const row = document.createElement('tr');
+        const model = [device.vendor, device.model].filter(Boolean).join(' ') || '--';
+        const transport = device.transport && device.transport !== 'unknown'
+          ? device.transport.toUpperCase()
+          : dashboardText('未知', 'Unknown');
+        const media = device.rotational === true
+          ? 'HDD'
+          : device.rotational === false
+            ? 'SSD'
+            : dashboardText('未知', 'Unknown');
+        const values = [
+          device.path || ('/dev/' + device.name),
+          model,
+          transport,
+          formatBytes(device.size),
+          media,
+          device.serial || '--'
+        ];
+
+        values.forEach((value, index) => {
+          const cell = document.createElement('td');
+          cell.textContent = String(value);
+          if (index === 0 || index === 5) cell.style.fontFamily = 'var(--font-mono)';
+          if (index === 0) cell.style.fontWeight = '600';
+          row.appendChild(cell);
+        });
+        diskDevicesBody.appendChild(row);
+      }
+    }
+  }
   const ssdTbody = document.getElementById('ssd-table-body');
   if (ssdTbody && data.disk?.partitions) {
     if (data.disk.partitions.length === 0) {
@@ -243,7 +296,7 @@ function updateMonitorsUI(data) {
   setText('statusbar-ram', `RAM: ${memPercent}% (${formatBytes(data.memory?.used)})`);
   setText('statusbar-net', `Net: ↓ ${formatSpeed(data.network?.rxSpeed || 0)} ↑ ${formatSpeed(data.network?.txSpeed || 0)}`);
   if (data.os?.uptimeFormatted) {
-    setText('statusbar-uptime', `开机: ${data.os.uptimeFormatted}`);
+    setText('statusbar-uptime', dashboardText('开机: ', 'Uptime: ') + data.os.uptimeFormatted);
   }
 }
 
