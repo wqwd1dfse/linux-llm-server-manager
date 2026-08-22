@@ -6,6 +6,14 @@ export function ensureParentDirectory(filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
+export function replaceFileAtomic(tempPath, filePath, fileSystem = fs) {
+  // Modern Node uses the platform's replace-existing rename semantics for
+  // files on the same volume. If a filesystem cannot provide that guarantee,
+  // fail with the original destination intact instead of copying over it and
+  // risking a partially-written credentials or configuration file.
+  fileSystem.renameSync(tempPath, filePath);
+}
+
 export function writeFileAtomic(filePath, content, options = {}) {
   const encoding = options.encoding || 'utf8';
   const mode = options.mode ?? 0o600;
@@ -27,17 +35,8 @@ export function writeFileAtomic(filePath, content, options = {}) {
       fs.closeSync(fd);
     }
 
-    try {
-      fs.renameSync(tempPath, filePath);
-      tempCreated = false;
-    } catch (error) {
-      // Windows cannot atomically replace an existing destination. Retain the
-      // durable temporary write, then use a narrow overwrite fallback.
-      if (!['EEXIST', 'EPERM'].includes(error.code)) throw error;
-      fs.copyFileSync(tempPath, filePath);
-      fs.unlinkSync(tempPath);
-      tempCreated = false;
-    }
+    replaceFileAtomic(tempPath, filePath);
+    tempCreated = false;
 
     try {
       fs.chmodSync(filePath, mode);

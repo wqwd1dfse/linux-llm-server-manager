@@ -11,10 +11,10 @@ import { fileURLToPath } from 'node:url';
 import { parseCookies, verifyPassword } from '../server/auth.js';
 import { loadAuthRecord } from '../server/authStore.js';
 import { getConfig, saveConfig } from '../server/config.js';
-import { writeJsonAtomic } from '../server/atomicFile.js';
+import { replaceFileAtomic, writeJsonAtomic } from '../server/atomicFile.js';
 import { isSupportedArchivePath } from '../server/archiveExtractor.js';
 import { metricsCollector } from '../server/metricsCollector.js';
-import { saveProfile, getProfile } from '../server/profileStore.js';
+import { deleteProfile, getProfile, listProfiles, saveProfile } from '../server/profileStore.js';
 import { applySecurityHeaders } from '../server/securityHeaders.js';
 import { verifyHostKey } from '../server/sshManager.js';
 
@@ -50,6 +50,21 @@ test('Atomic JSON writes replace content and leave no temporary artifacts', (t) 
 
   assert.deepEqual(JSON.parse(fs.readFileSync(target, 'utf8')), { version: 2, ok: true });
   assert.deepEqual(fs.readdirSync(path.dirname(target)), ['record.json']);
+});
+
+test('Atomic replacement never falls back to a partial destination overwrite', () => {
+  let copied = false;
+  const renameError = Object.assign(new Error('replace is unavailable'), { code: 'EPERM' });
+  const fileSystem = {
+    renameSync() { throw renameError; },
+    copyFileSync() { copied = true; }
+  };
+
+  assert.throws(
+    () => replaceFileAtomic('record.tmp', 'record.json', fileSystem),
+    error => error === renameError
+  );
+  assert.equal(copied, false);
 });
 
 test('Configuration files load valid objects and refuse to overwrite malformed state', (t) => {
@@ -130,6 +145,39 @@ test('Profile updates preserve omitted key-auth fields', (t) => {
   fs.writeFileSync(process.env.SERVER_PROFILES_FILE, '{malformed json', 'utf8');
   assert.throws(() => saveProfile({ id: created.id, name: 'Must not overwrite' }), /已停止覆盖/);
   assert.equal(fs.readFileSync(process.env.SERVER_PROFILES_FILE, 'utf8'), '{malformed json');
+});
+
+test('Profile storage isolates invalid records and refuses to overwrite them', (t) => {
+  const directory = withTempDirectory(t, 'llm-manager-invalid-profiles-');
+  const previousPath = process.env.SERVER_PROFILES_FILE;
+  process.env.SERVER_PROFILES_FILE = path.join(directory, 'servers.json');
+  t.after(() => {
+    if (previousPath === undefined) delete process.env.SERVER_PROFILES_FILE;
+    else process.env.SERVER_PROFILES_FILE = previousPath;
+  });
+
+  const validProfile = {
+    id: 'valid-profile',
+    name: 'Valid profile',
+    label: '',
+    host: '192.0.2.20',
+    port: 22,
+    username: 'operator',
+    authType: 'password',
+    password: 'stored-secret',
+    privateKey: '',
+    passphrase: '',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  const stored = JSON.stringify({ version: 1, profiles: [null, validProfile] });
+  fs.writeFileSync(process.env.SERVER_PROFILES_FILE, stored, 'utf8');
+
+  assert.deepEqual(listProfiles().map(profile => profile.id), ['valid-profile']);
+  assert.equal(getProfile('missing-profile'), null);
+  assert.throws(() => saveProfile({ ...validProfile, name: 'Do not overwrite' }), /invalid profile record/);
+  assert.throws(() => deleteProfile('valid-profile'), /invalid profile record/);
+  assert.equal(fs.readFileSync(process.env.SERVER_PROFILES_FILE, 'utf8'), stored);
 });
 
 test('Archive format allowlist is explicit and excludes misleading suffixes', () => {

@@ -16,6 +16,19 @@ function ensureDataDir(filePath = getProfilesFilePath()) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
+function isStoredProfile(profile) {
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return false;
+  if (typeof profile.id !== 'string' || !profile.id.trim() || profile.id.length > 64) return false;
+  if (typeof profile.name !== 'string' || !profile.name.trim() || profile.name.length > 64) return false;
+  if (typeof profile.host !== 'string' || !profile.host.trim() || profile.host.length > 255) return false;
+  if (typeof profile.username !== 'string' || !profile.username.trim() || profile.username.length > 64) return false;
+  if (!Number.isInteger(profile.port) || profile.port < 1 || profile.port > 65535) return false;
+  if (!['password', 'key'].includes(profile.authType)) return false;
+  if (profile.authType === 'password' && typeof profile.password !== 'string') return false;
+  if (profile.authType === 'key' && typeof profile.privateKey !== 'string') return false;
+  return true;
+}
+
 function readStore(options = {}) {
   const profilesPath = getProfilesFilePath();
   ensureDataDir(profilesPath);
@@ -25,9 +38,16 @@ function readStore(options = {}) {
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.profiles)) {
       throw new Error('servers.json must contain a profiles array');
     }
+    const invalidCount = parsed.profiles.filter(profile => !isStoredProfile(profile)).length;
+    if (invalidCount > 0 && options.throwOnError) {
+      throw new Error(`servers.json contains ${invalidCount} invalid profile record(s)`);
+    }
+    if (invalidCount > 0) {
+      console.error(`[Profiles] Ignoring ${invalidCount} invalid profile record(s) in servers.json`);
+    }
     return {
       version: 1,
-      profiles: parsed.profiles
+      profiles: parsed.profiles.filter(isStoredProfile)
     };
   } catch (err) {
     console.error('[Profiles] Failed to read servers.json:', err.message);

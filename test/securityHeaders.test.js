@@ -84,3 +84,28 @@ test('SecurityHeaders: unsafe API requests reject cross-site browser origins', (
   assert.equal(statusCode, 403);
   assert.equal(responseBody.success, false);
 });
+
+test('SecurityHeaders: CORS preflight permits the SSH target epoch header', () => {
+  const headers = {};
+  let statusCode = 200;
+  const req = {
+    method: 'OPTIONS',
+    path: '/api/system/metrics',
+    secure: true,
+    headers: {
+      origin: 'https://manager.example',
+      host: 'manager.example',
+      'access-control-request-headers': 'content-type,x-ssh-target-epoch'
+    }
+  };
+  const res = {
+    setHeader(name, value) { headers[name] = value; },
+    status(code) { statusCode = code; return this; },
+    end() {}
+  };
+
+  applySecurityHeaders(req, res, () => assert.fail('preflight should end in the middleware'));
+
+  assert.equal(statusCode, 204);
+  assert.match(headers['Access-Control-Allow-Headers'], /(?:^|,\s*)X-SSH-Target-Epoch(?:,|$)/i);
+});
