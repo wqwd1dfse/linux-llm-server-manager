@@ -22,6 +22,19 @@ const HF_FETCH_TIMEOUT_MS = 15_000;
 const MAX_DOWNLOAD_TASKS = 100;
 const DOWNLOAD_TASK_RETENTION_MS = 60 * 60 * 1000;
 
+export function attachConnectedSocketToAgent(agent, socket) {
+  agent.createConnection = (_options, callback) => {
+    queueMicrotask(() => {
+      if (socket?.destroyed) {
+        callback(new Error('SSH 端口转发连接已关闭'));
+      } else {
+        callback(null, socket);
+      }
+    });
+  };
+  return agent;
+}
+
 function parseBoundedInteger(value, name, min, max, fallback = null) {
   if ((value === undefined || value === null || value === '') && fallback !== null) return fallback;
   const text = String(value).trim();
@@ -1011,7 +1024,12 @@ router.post('/chat', async (req, res) => {
     tunnel = await createForwardedConnection('127.0.0.1', targetPort);
 
     const tunnelAgent = new http.Agent({ keepAlive: false });
-    tunnelAgent.createConnection = () => tunnel;
+    // An ssh2 Channel is already connected when it reaches the HTTP agent. If
+    // it is returned synchronously, Node 24 can observe an immediate channel
+    // end inside http.request(), before callers have a chance to attach the
+    // ClientRequest error handler. Hand the socket to the agent on the next
+    // microtask so request-level guards are installed first.
+    attachConnectedSocketToAgent(tunnelAgent, tunnel);
 
     const options = {
       hostname: '127.0.0.1',
@@ -1022,8 +1040,7 @@ router.post('/chat', async (req, res) => {
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload)
-      },
-      timeout: 120000
+      }
     };
 
     if (req.body.stream) {
@@ -1032,29 +1049,44 @@ router.post('/chat', async (req, res) => {
       res.setHeader('Connection', 'keep-alive');
     }
 
+    let proxyIdleTimer = null;
+    const clearProxyIdleTimer = () => {
+      if (proxyIdleTimer) clearTimeout(proxyIdleTimer);
+      proxyIdleTimer = null;
+    };
+    const armProxyIdleTimer = () => {
+      clearProxyIdleTimer();
+      proxyIdleTimer = setTimeout(() => {
+        proxyReq.destroy(new Error('llama-server 请求超时'));
+      }, 120000);
+      proxyIdleTimer.unref?.();
+    };
+
     const proxyReq = http.request(options, (proxyRes) => {
       res.status(proxyRes.statusCode || 502);
       if (!req.body.stream && proxyRes.headers['content-type']) {
         res.setHeader('Content-Type', proxyRes.headers['content-type']);
       }
       proxyRes.on('error', () => {
+        clearProxyIdleTimer();
         try { tunnel?.destroy(); } catch (_) {}
       });
+      proxyRes.on('data', armProxyIdleTimer);
       proxyRes.on('end', () => {
+        clearProxyIdleTimer();
         try { tunnel?.destroy(); } catch (_) {}
       });
       proxyRes.pipe(res);
     });
     res.on('close', () => {
+      clearProxyIdleTimer();
       if (!proxyReq.destroyed) proxyReq.destroy();
       try { tunnel?.destroy(); } catch (_) {}
       tunnelAgent.destroy();
     });
 
-    proxyReq.on('timeout', () => {
-      proxyReq.destroy(new Error('llama-server 请求超时'));
-    });
     proxyReq.on('error', (err) => {
+      clearProxyIdleTimer();
       try { tunnel?.destroy(); } catch (_) {}
       if (!res.headersSent) {
         res.status(502).json({ success: false, error: `无法通过 SSH 连接 llama-server 端口 ${targetPort} (${err.message})` });
@@ -1062,11 +1094,13 @@ router.post('/chat', async (req, res) => {
         res.end();
       }
     });
+    proxyReq.on('close', clearProxyIdleTimer);
     req.on('aborted', () => {
       proxyReq.destroy();
       try { tunnel?.destroy(); } catch (_) {}
     });
 
+    armProxyIdleTimer();
     proxyReq.write(payload);
     proxyReq.end();
   } catch (err) {
