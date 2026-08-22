@@ -19,8 +19,11 @@ import llmRouter, {
   TargetScopedStore,
   applyDownloadInspection,
   assertDownloadInitializationActive,
+  assertLlamaLaunchPortAvailable,
   cancelTargetDownloadTask,
   inspectManagedDownloadProcess,
+  parseListeningTcpPorts,
+  parseLlamaServerProbe,
   parseRecoveredDownloadState,
   parseRecoveredLlamaState,
   readBoundedResponseText,
@@ -142,6 +145,49 @@ test('Model download concurrency defaults low and cannot be configured above 32'
   assert.equal(resolveMaxActiveModelDownloads({ MAX_ACTIVE_MODEL_DOWNLOADS: '32' }), 32);
   assert.equal(resolveMaxActiveModelDownloads({ MAX_ACTIVE_MODEL_DOWNLOADS: '33' }), 4);
   assert.equal(resolveMaxActiveModelDownloads({ MAX_ACTIVE_MODEL_DOWNLOADS: 'invalid' }), 4);
+});
+
+test('External llama probes require model data and llama metadata endpoints', () => {
+  const valid = parseLlamaServerProbe(
+    { success: true, stdout: JSON.stringify({ data: [{ id: 'external-model' }] }) },
+    { success: true, stdout: JSON.stringify({ default_generation_settings: {} }) },
+    { success: true, stdout: JSON.stringify([{ id: 0 }]) }
+  );
+  assert.equal(valid.healthy, true);
+  assert.equal(valid.modelsJson.data[0].id, 'external-model');
+  assert.equal(valid.slots[0].id, 0);
+
+  assert.equal(parseLlamaServerProbe(
+    { success: true, stdout: '<html>unrelated service</html>' },
+    { success: true, stdout: '{}' },
+    { success: true, stdout: '[]' }
+  ).healthy, false);
+  assert.equal(parseLlamaServerProbe(
+    { success: true, stdout: JSON.stringify({ data: [] }) },
+    { success: true, stdout: '{}' },
+    { success: true, stdout: '[]' }
+  ).healthy, false);
+});
+
+test('Listening TCP port parsing handles IPv4, IPv6 and wildcard addresses', () => {
+  const ports = parseListeningTcpPorts([
+    'LISTEN 0 4096 127.0.0.1:8080 0.0.0.0:*',
+    'LISTEN 0 128 [::]:9090 [::]:*',
+    'LISTEN 0 64 *:3888 *:*'
+  ].join('\n'));
+  assert.deepEqual([...ports].sort((a, b) => a - b), [3888, 8080, 9090]);
+});
+
+test('LLM launch refuses an occupied listening port before starting a process', async () => {
+  const calls = [];
+  await assert.rejects(
+    assertLlamaLaunchPortAvailable(8080, async (executable, argv) => {
+      calls.push({ executable, argv });
+      return { success: true, stdout: 'LISTEN 0 4096 0.0.0.0:8080 0.0.0.0:*\n', stderr: '' };
+    }),
+    error => error?.code === 'LLM_PORT_IN_USE'
+  );
+  assert.deepEqual(calls, [{ executable: 'ss', argv: ['-H', '-ltn'] }]);
 });
 
 test('Local model scans coalesce per target and release the in-flight promise', async () => {

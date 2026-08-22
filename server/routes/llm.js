@@ -438,6 +438,84 @@ function formatBytes(bytes) {
   return `${Number.parseFloat((numericBytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 }
 
+function parseJsonCommandOutput(result) {
+  if (!result?.stdout) return null;
+  try {
+    return JSON.parse(result.stdout);
+  } catch (_) {
+    return null;
+  }
+}
+
+export function parseLlamaServerProbe(modelsResult, propsResult, slotsResult) {
+  const modelsJson = parseJsonCommandOutput(modelsResult);
+  const props = parseJsonCommandOutput(propsResult);
+  const slots = parseJsonCommandOutput(slotsResult);
+  const models = Array.isArray(modelsJson?.data)
+    ? modelsJson.data
+    : Array.isArray(modelsJson?.models)
+      ? modelsJson.models
+      : null;
+  const hasLlamaMetadata = Boolean(
+    props && typeof props === 'object' && !Array.isArray(props)
+  ) || Array.isArray(slots);
+  return {
+    healthy: Boolean(models?.length && hasLlamaMetadata),
+    modelsJson,
+    props: props && typeof props === 'object' && !Array.isArray(props) ? props : null,
+    slots: Array.isArray(slots) ? slots : null
+  };
+}
+
+async function probeLlamaServer(port) {
+  const safeProbe = (probe) => probe.catch((error) => {
+    if (error?.code === 'SSH_TARGET_CHANGED' || error?.code === 'SSH_TARGET_CHANGING') throw error;
+    return null;
+  });
+  const curlOptions = { timeoutMs: 3500, maxStdoutBytes: 2 * 1024 * 1024 };
+  const [modelsResult, propsResult, slotsResult] = await Promise.all([
+    safeProbe(executeCommand('curl', ['-sS', '--fail', '--max-time', '3', `http://127.0.0.1:${port}/v1/models`], curlOptions)),
+    safeProbe(executeCommand('curl', ['-sS', '--fail', '--max-time', '3', `http://127.0.0.1:${port}/props`], curlOptions)),
+    safeProbe(executeCommand('curl', ['-sS', '--fail', '--max-time', '3', `http://127.0.0.1:${port}/slots`], curlOptions))
+  ]);
+  return parseLlamaServerProbe(modelsResult, propsResult, slotsResult);
+}
+
+export function parseListeningTcpPorts(stdout) {
+  const ports = new Set();
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    const columns = line.trim().split(/\s+/);
+    const localAddress = columns[3] || '';
+    const match = localAddress.match(/:(\d+)$/);
+    if (match) ports.add(Number(match[1]));
+  }
+  return ports;
+}
+
+export async function assertLlamaLaunchPortAvailable(
+  port,
+  commandExecutor = executeCommand,
+  llamaProbe = probeLlamaServer
+) {
+  const result = await commandExecutor('ss', ['-H', '-ltn'], {
+    timeoutMs: 3000,
+    maxStdoutBytes: 512 * 1024
+  });
+  if (result.success && parseListeningTcpPorts(result.stdout).has(port)) {
+    const error = new Error(`端口 ${port} 已被现有服务占用；请停止外部服务或选择其他端口`);
+    error.code = 'LLM_PORT_IN_USE';
+    throw error;
+  }
+  if (!result.success) {
+    const probe = await llamaProbe(port);
+    if (probe.healthy) {
+      const error = new Error(`端口 ${port} 已有 llama-server 运行；管理器不会接管或覆盖外部进程`);
+      error.code = 'LLM_PORT_IN_USE';
+      throw error;
+    }
+  }
+}
+
 function normalizeHfNonNegativeInteger(value) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 0;
   return Math.min(Number.MAX_SAFE_INTEGER, Math.floor(value));
@@ -1097,7 +1175,7 @@ router.get('/status', async (req, res) => {
     const activeInstance = activeInstancesByTarget.get(target.key);
     const managedProcessStatus = await inspectManagedLlamaProcess(activeInstance, target.key);
     requireCurrentTarget(target.key);
-    const isRunning = managedProcessStatus === 'running';
+    const managedRunning = managedProcessStatus === 'running';
 
     let processInfo = null;
     let modelName = activeInstance.alias || '未知 / 未运行';
@@ -1106,7 +1184,7 @@ router.get('/status', async (req, res) => {
     let pid = activeInstance.pid || null;
     let modelDetails = null;
 
-    if (isRunning) {
+    if (managedRunning) {
       activeInstance.isRunning = true;
       launchCmd = activeInstance.launchParams
         ? [DEFAULT_LLAMA_BIN, ...buildLlamaArgs(activeInstance.source, activeInstance.modelPath, activeInstance.launchParams)].join(' ')
@@ -1133,25 +1211,26 @@ router.get('/status', async (req, res) => {
       }
     }
 
-    let serverProps = null;
-    let slots = null;
-    let serverHealthy = false;
+    const probe = await probeLlamaServer(port);
+    requireCurrentTarget(target.key);
+    const externalRunning = !managedRunning && probe.healthy;
+    const isRunning = managedRunning || externalRunning;
+    const serverProps = probe.props;
+    const slots = probe.slots;
+    const serverHealthy = probe.healthy;
 
     if (isRunning) {
-      const safeProbe = (probe) => probe.catch((error) => {
-        if (error?.code === 'SSH_TARGET_CHANGED' || error?.code === 'SSH_TARGET_CHANGING') throw error;
-        return null;
-      });
-      const [modelsRes, propsRes, slotsRes] = await Promise.all([
-        safeProbe(executeCommand('curl', ['-s', `http://127.0.0.1:${port}/v1/models`], { timeoutMs: 3000 })),
-        safeProbe(executeCommand('curl', ['-s', `http://127.0.0.1:${port}/props`], { timeoutMs: 3000 })),
-        safeProbe(executeCommand('curl', ['-s', `http://127.0.0.1:${port}/slots`], { timeoutMs: 3000 }))
-      ]);
-      requireCurrentTarget(target.key);
-
+      if (externalRunning) {
+        processInfo = {
+          pid: null,
+          launchCmd: 'External llama-server (read-only detection)',
+          managed: false,
+          target: target.label
+        };
+      }
       try {
-        if (modelsRes?.stdout) {
-          const modelsJson = JSON.parse(modelsRes.stdout);
+        if (probe.modelsJson) {
+          const modelsJson = probe.modelsJson;
           const firstModel = modelsJson.data?.[0] || modelsJson.models?.[0];
           if (firstModel) {
             modelName = firstModel.id || firstModel.name || modelName;
@@ -1172,19 +1251,6 @@ router.get('/status', async (req, res) => {
               modelName = `${firstModel.id || modelName} (${[ftype, paramsCount].filter(Boolean).join(' / ')})`;
             }
           }
-        }
-      } catch (_) {}
-
-      try {
-        if (propsRes?.stdout) {
-          serverProps = JSON.parse(propsRes.stdout);
-          serverHealthy = true;
-        }
-      } catch (_) {}
-
-      try {
-        if (slotsRes?.stdout) {
-          slots = JSON.parse(slotsRes.stdout);
         }
       } catch (_) {}
     }
@@ -1209,11 +1275,11 @@ router.get('/status', async (req, res) => {
           parallel: activeInstance.launchParams?.parallel || null,
           flashAttention: activeInstance.launchParams?.fa ?? null,
           launchedAt: activeInstance.launchedAt,
-          uptimeMs: activeInstance.launchedAt && isRunning ? Date.now() - activeInstance.launchedAt : null
+          uptimeMs: activeInstance.launchedAt && managedRunning ? Date.now() - activeInstance.launchedAt : null
         },
         serverProps,
         slots,
-        managedProcessStatus,
+        managedProcessStatus: externalRunning ? 'external-running' : managedProcessStatus,
         hfTokenConfigured: Boolean(getConfig().hfToken)
       }
     });
@@ -1323,7 +1389,15 @@ print(json.dumps(models))
       throw new Error('Remote model scan returned malformed data');
     }
 
-    const activeModelKeyword = activeInstance.alias || '';
+    let activeModelKeyword = activeInstance.alias || '';
+    if (!activeModelKeyword) {
+      const activeProbe = await probeLlamaServer(activeInstance.port || 8080);
+      requireCurrentTarget(target.key);
+      if (activeProbe.healthy) {
+        const firstModel = activeProbe.modelsJson?.data?.[0] || activeProbe.modelsJson?.models?.[0];
+        activeModelKeyword = firstModel?.id || firstModel?.name || '';
+      }
+    }
 
     const models = rawModels.map(m => {
       const filename = m.name;
@@ -2638,6 +2712,8 @@ router.post('/run-local', async (req, res) => {
 
     await stopManagedLlamaServer(target);
     requireCurrentTarget(target.key);
+    await assertLlamaLaunchPortAvailable(validatedParams.port);
+    requireCurrentTarget(target.key);
 
     const runResult = await launchLlamaServer('file', validatedPath, validatedParams, target.key);
 
@@ -2681,7 +2757,7 @@ router.post('/run-local', async (req, res) => {
     });
     });
   } catch (err) {
-    const conflict = ['SSH_TARGET_CHANGED', 'SSH_TARGET_CHANGING', 'MANAGED_PROCESS_LAUNCH_AMBIGUOUS', 'LLM_LIFECYCLE_BUSY'].includes(err.code);
+    const conflict = ['SSH_TARGET_CHANGED', 'SSH_TARGET_CHANGING', 'MANAGED_PROCESS_LAUNCH_AMBIGUOUS', 'LLM_LIFECYCLE_BUSY', 'LLM_PORT_IN_USE'].includes(err.code);
     res.status(conflict ? 409 : 400).json({ success: false, error: err.message });
   }
 });
@@ -2704,6 +2780,8 @@ router.post('/start', async (req, res) => {
     }
 
     await stopManagedLlamaServer(target);
+    requireCurrentTarget(target.key);
+    await assertLlamaLaunchPortAvailable(validatedParams.port);
     requireCurrentTarget(target.key);
     const runResult = await launchLlamaServer(source, validatedModelPath, validatedParams, target.key);
 
@@ -2747,7 +2825,7 @@ router.post('/start', async (req, res) => {
     });
     });
   } catch (err) {
-    const conflict = ['SSH_TARGET_CHANGED', 'SSH_TARGET_CHANGING', 'MANAGED_PROCESS_LAUNCH_AMBIGUOUS', 'LLM_LIFECYCLE_BUSY'].includes(err.code);
+    const conflict = ['SSH_TARGET_CHANGED', 'SSH_TARGET_CHANGING', 'MANAGED_PROCESS_LAUNCH_AMBIGUOUS', 'LLM_LIFECYCLE_BUSY', 'LLM_PORT_IN_USE'].includes(err.code);
     res.status(conflict ? 409 : 400).json({ success: false, error: err.message });
   }
 });
@@ -2779,6 +2857,8 @@ router.post('/restart', async (req, res) => {
       return res.status(409).json({ success: false, error: '缺少上次启动参数，请重新选择模型启动' });
     }
     await stopManagedLlamaServer(target);
+    requireCurrentTarget(target.key);
+    await assertLlamaLaunchPortAvailable(activeInstance.launchParams.port);
     requireCurrentTarget(target.key);
 
     const runResult = await launchLlamaServer(
@@ -2817,7 +2897,7 @@ router.post('/restart', async (req, res) => {
     res.json({ success: true, message: '已按原参数重新启动推理模型服务' });
     });
   } catch (err) {
-    const conflict = ['SSH_TARGET_CHANGED', 'SSH_TARGET_CHANGING', 'MANAGED_PROCESS_IDENTITY_MISMATCH', 'MANAGED_PROCESS_LAUNCH_AMBIGUOUS', 'LLM_LIFECYCLE_BUSY'].includes(err.code);
+    const conflict = ['SSH_TARGET_CHANGED', 'SSH_TARGET_CHANGING', 'MANAGED_PROCESS_IDENTITY_MISMATCH', 'MANAGED_PROCESS_LAUNCH_AMBIGUOUS', 'LLM_LIFECYCLE_BUSY', 'LLM_PORT_IN_USE'].includes(err.code);
     res.status(conflict ? 409 : 500).json({ success: false, error: err.message });
   }
 });
@@ -2850,16 +2930,21 @@ router.post('/chat', async (req, res) => {
     const target = requireCurrentTarget();
     await ensureManagedStateRecovered(target);
     const activeInstance = activeInstancesByTarget.peek(target.key);
-    if (!activeInstance?.pid || !activeInstance.isRunning) {
-      return res.status(409).json({ success: false, error: '当前 SSH 服务器没有正在运行的托管模型' });
-    }
-    const managedStatus = await inspectManagedLlamaProcess(activeInstance, target.key);
-    requireCurrentTarget(target.key);
-    if (managedStatus !== 'running') {
-      activeInstance.isRunning = false;
-      return res.status(409).json({ success: false, error: '托管模型进程已退出或身份校验失败' });
-    }
     const targetPort = activeInstance.port || 8080;
+    if (activeInstance?.pid && activeInstance.isRunning) {
+      const managedStatus = await inspectManagedLlamaProcess(activeInstance, target.key);
+      requireCurrentTarget(target.key);
+      if (managedStatus !== 'running') {
+        activeInstance.isRunning = false;
+        return res.status(409).json({ success: false, error: '托管模型进程已退出或身份校验失败' });
+      }
+    } else {
+      const externalProbe = await probeLlamaServer(targetPort);
+      requireCurrentTarget(target.key);
+      if (!externalProbe.healthy) {
+        return res.status(409).json({ success: false, error: '当前 SSH 服务器没有可用的 llama-server' });
+      }
+    }
     const payload = JSON.stringify(req.body);
     tunnel = await createForwardedConnection('127.0.0.1', targetPort);
 

@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import {
   FAN_OPERATION_LOCK_FILE,
   FAN_RUNTIME_DIR,
+  findInstalledFanService,
   performFanServiceAction,
   recoverAutomaticFanControl
 } from '../server/routes/fan.js';
@@ -87,6 +88,21 @@ test('Fan service action reports lock contention without claiming success or que
   assert.equal(result.success, false);
   assert.equal(result.busy, true);
   assert.equal(calls.length, 1);
+});
+
+test('Fan service selection prefers the already-active legacy controller', async () => {
+  const calls = [];
+  const selected = await findInstalledFanService(queuedExecutor([
+    { success: false, code: 3, stdout: 'inactive\n', stderr: '' },
+    { success: true, code: 0, stdout: 'active\n', stderr: '' }
+  ], calls));
+
+  assert.equal(selected, 'mi50-fan-control');
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.map(call => call.argv), [
+    ['is-active', 'fan-control'],
+    ['is-active', 'mi50-fan-control']
+  ]);
 });
 
 test('Automatic recovery stops a failed new unit and falls back to the legacy controller', async () => {

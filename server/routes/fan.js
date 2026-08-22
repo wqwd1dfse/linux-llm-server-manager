@@ -199,9 +199,20 @@ export async function recoverAutomaticFanControl(commandExecutor = executeComman
   };
 }
 
-async function findInstalledFanService() {
+export async function findInstalledFanService(commandExecutor = executeCommand) {
+  // If both generations are installed, always operate on the controller that
+  // is already active. Selecting an inactive preferred unit could start a
+  // second writer beside the legacy daemon or make stop/restart appear broken.
   for (const serviceName of FAN_SERVICE_NAMES) {
-    const result = await executeCommand(
+    const result = await commandExecutor(
+      'systemctl',
+      ['is-active', serviceName],
+      { timeoutMs: 4000 }
+    );
+    if (result.success && result.stdout.trim() === 'active') return serviceName;
+  }
+  for (const serviceName of FAN_SERVICE_NAMES) {
+    const result = await commandExecutor(
       'systemctl',
       ['show', serviceName, '--property=LoadState', '--value'],
       { timeoutMs: 4000 }
@@ -310,14 +321,25 @@ for d in /dev/sd[a-z]; do
 done
 
 echo "---SERVICE---"
-if systemctl cat fan-control.service >/dev/null 2>&1; then
+if systemctl is-active --quiet fan-control.service 2>/dev/null; then
   echo "INSTALLED:1"
+  echo "NAME:fan-control"
+  echo "STATE:active"
+elif systemctl is-active --quiet mi50-fan-control.service 2>/dev/null; then
+  echo "INSTALLED:1"
+  echo "NAME:mi50-fan-control"
+  echo "STATE:active"
+elif systemctl cat fan-control.service >/dev/null 2>&1; then
+  echo "INSTALLED:1"
+  echo "NAME:fan-control"
   echo "STATE:$(systemctl is-active fan-control.service 2>/dev/null || echo inactive)"
 elif systemctl cat mi50-fan-control.service >/dev/null 2>&1; then
   echo "INSTALLED:1"
+  echo "NAME:mi50-fan-control"
   echo "STATE:$(systemctl is-active mi50-fan-control.service 2>/dev/null || echo inactive)"
 else
   echo "INSTALLED:0"
+  echo "NAME:"
   echo "STATE:not-installed"
 fi
 `;
@@ -427,7 +449,7 @@ router.get('/status', async (req, res) => {
 
     const statusData = {
       service: {
-        name: 'fan-control',
+        name: serviceMap['NAME'] || null,
         installed: serviceInstalled,
         isActive: serviceActive,
         statusText: !serviceInstalled ? '未安装 (Not Installed)' : serviceActive ? '自动温控中 (Active)' : '已暂停 (Manual Override)'

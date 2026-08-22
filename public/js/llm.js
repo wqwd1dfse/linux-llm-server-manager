@@ -257,8 +257,9 @@ function renderLLMStatus(status) {
   const resources = document.getElementById('llm-active-resources');
 
   if (status.isRunning) {
+    const isManaged = status.processInfo?.managed === true;
     if (badge) {
-      badge.innerText = '● 正在运行 (Running)';
+      badge.innerText = isManaged ? '● 正在运行 (Running)' : '● 外部服务运行中 (Read-only)';
       badge.style.color = 'var(--perf-green)';
     }
     if (modelName) modelName.innerText = status.modelName;
@@ -277,14 +278,16 @@ function renderLLMStatus(status) {
       params.innerText = parts.join(' · ') || '外部启动，参数未知';
     }
     if (resources) {
-      resources.innerText = status.processInfo
-        ? `PID ${status.processInfo.pid} · CPU ${status.processInfo.cpu}% · MEM ${status.processInfo.mem}%`
-        : '--';
+      const resourceParts = [];
+      if (status.processInfo?.pid) resourceParts.push(`PID ${status.processInfo.pid}`);
+      if (Number.isFinite(Number(status.processInfo?.cpu))) resourceParts.push(`CPU ${status.processInfo.cpu}%`);
+      if (Number.isFinite(Number(status.processInfo?.mem))) resourceParts.push(`MEM ${status.processInfo.mem}%`);
+      resources.innerText = resourceParts.join(' · ') || (isManaged ? '托管进程运行中' : '外部进程（不会被管理器停止）');
     }
 
-    if (btnStart) btnStart.style.display = 'none';
-    if (btnRestart) btnRestart.style.display = 'inline-flex';
-    if (btnStop) btnStop.style.display = 'inline-flex';
+    if (btnStart) btnStart.style.display = isManaged ? 'none' : 'inline-flex';
+    if (btnRestart) btnRestart.style.display = isManaged ? 'inline-flex' : 'none';
+    if (btnStop) btnStop.style.display = isManaged ? 'inline-flex' : 'none';
 
     renderSlots(status.slots);
   } else {
@@ -1197,7 +1200,7 @@ async function handleSendMessage() {
   const temperature = parseFloat(document.getElementById('slider-temperature')?.value || '0.7');
   const top_p = parseFloat(document.getElementById('slider-topp')?.value || '0.9');
   const max_tokens = parseInt(document.getElementById('slider-maxtokens')?.value || '4096', 10);
-  const activeModel = currentLlmStatus?.modelName || 'gpt-oss-20b';
+  const activeModel = currentLlmStatus?.modelDetails?.id || currentLlmStatus?.modelName || 'gpt-oss-20b';
 
   const messages = [];
   if (sysPrompt) {
