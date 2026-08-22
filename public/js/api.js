@@ -10,12 +10,44 @@ window.escapeHtml = function (str) {
     .replace(/'/g, '&#39;');
 };
 
+window.serverTargetEpoch = window.serverTargetEpoch || null;
+
+window.getSshTargetEpoch = function getSshTargetEpoch() {
+  return typeof window.serverTargetEpoch === 'string' && window.serverTargetEpoch
+    ? window.serverTargetEpoch
+    : null;
+};
+
+window.getSshTargetRequestHeaders = function getSshTargetRequestHeaders() {
+  const targetEpoch = window.getSshTargetEpoch();
+  return targetEpoch ? { 'X-SSH-Target-Epoch': targetEpoch } : {};
+};
+
+window.withSshTargetEpochUrl = function withSshTargetEpochUrl(url) {
+  const targetEpoch = window.getSshTargetEpoch();
+  if (!targetEpoch) return url;
+  const parsed = new URL(url, window.location.origin);
+  if (parsed.origin !== window.location.origin) return url;
+  parsed.searchParams.set('targetEpoch', targetEpoch);
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+};
+
+window.reportSshTargetError = function reportSshTargetError(payload) {
+  if (payload?.code !== 'SSH_TARGET_STALE' && payload?.code !== 'SSH_TARGET_EPOCH_REQUIRED') return false;
+  window.dispatchEvent(new CustomEvent('sshtargetstale', { detail: payload }));
+  return true;
+};
+
 window.api = {
   async request(url, options = {}) {
     try {
       const { headers = {}, ...requestOptions } = options;
       const requestHeaders = new Headers(headers);
       requestHeaders.set('Accept', 'application/json');
+      if (String(url).startsWith('/api/')) {
+        const targetEpoch = window.getSshTargetEpoch();
+        if (targetEpoch) requestHeaders.set('X-SSH-Target-Epoch', targetEpoch);
+      }
       if (requestOptions.body != null && !(requestOptions.body instanceof FormData) && !requestHeaders.has('Content-Type')) {
         requestHeaders.set('Content-Type', 'application/json');
       }
@@ -42,11 +74,15 @@ window.api = {
       }
 
       if (!res.ok || data.success === false) {
-        throw new Error(data.error || `请求失败 (${res.status})`);
+        window.reportSshTargetError(data);
+        const error = new Error(data.error || `请求失败 (${res.status})`);
+        error.code = data.code;
+        error.status = res.status;
+        throw error;
       }
       return data;
     } catch (err) {
-      if (err.message !== '未授权或登录已过期') {
+      if (err.name !== 'AbortError' && err.message !== '未授权或登录已过期') {
         window.toast(err.message, 'error');
       }
       throw err;

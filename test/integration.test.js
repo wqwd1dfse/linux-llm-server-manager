@@ -15,6 +15,8 @@ import {
 
 import {
   authenticateUser,
+  checkRateLimit,
+  createLoginHashLimiter,
   createSession,
   getSession,
   destroySession,
@@ -23,6 +25,7 @@ import {
   authMiddleware,
   authenticateWebSocketRequest,
   setInitialPassword,
+  resetFailedAttempts,
   SESSION_COOKIE_NAME
 } from '../server/auth.js';
 
@@ -88,26 +91,66 @@ test('1. Auth Persistence & 220,000 Iteration PBKDF2-SHA512', () => {
   assert.equal(verifyPassword(password, loaded), true);
 });
 
-test('2. Username & Password Real Validation in authenticateUser', () => {
+test('2. Username & Password Real Validation in authenticateUser', async () => {
   const password = 'AdminPasswordValid2026';
   setInitialPassword(password, 'sysadmin');
   assert.throws(() => setInitialPassword('Short123', 'sysadmin'), /至少需要 12 个字符/);
+  assert.throws(
+    () => setInitialPassword('your_secure_admin_password_here', 'sysadmin'),
+    /public example placeholder/
+  );
 
   // Case A: Correct username + Correct password
-  const resSuccess = authenticateUser('sysadmin', password, '127.0.0.1');
+  const resSuccess = await authenticateUser('sysadmin', password, '127.0.0.1');
   assert.equal(resSuccess.success, true);
   assert.equal(resSuccess.username, 'sysadmin');
   assert.equal(typeof resSuccess.token, 'string');
 
   // Case B: Wrong username + Correct password -> MUST FAIL
-  const resWrongUser = authenticateUser('admin', password, '127.0.0.1');
+  const resWrongUser = await authenticateUser('admin', password, '127.0.0.1');
   assert.equal(resWrongUser.success, false);
   assert.equal(resWrongUser.error, '用户名或密码错误');
 
   // Case C: Correct username + Wrong password -> MUST FAIL
-  const resWrongPass = authenticateUser('sysadmin', 'WrongPass', '127.0.0.1');
+  const resWrongPass = await authenticateUser('sysadmin', 'WrongPass', '127.0.0.1');
   assert.equal(resWrongPass.success, false);
   assert.equal(resWrongPass.error, '用户名或密码错误');
+});
+
+test('2b. Concurrent login bursts cannot outrun the rate limiter', async () => {
+  const ip = '198.51.100.77';
+  resetFailedAttempts(ip);
+  const results = await Promise.all(
+    Array.from({ length: 6 }, () => authenticateUser('sysadmin', 'WrongPass', ip))
+  );
+  assert.equal(results.some((result) => /登录尝试过多/.test(result.error || '')), true);
+  assert.equal(checkRateLimit(ip).allowed, false);
+  resetFailedAttempts(ip);
+});
+
+test('2c. Login hash backpressure configuration is strictly bounded', () => {
+  const defaults = createLoginHashLimiter({});
+  assert.equal(defaults.limit, 4);
+  assert.equal(defaults.maxQueue, 32);
+  assert.equal(defaults.queueTimeoutMs, 2_000);
+
+  const maximums = createLoginHashLimiter({
+    MAX_CONCURRENT_LOGIN_HASHES: '32',
+    MAX_QUEUED_LOGIN_HASHES: '256',
+    LOGIN_HASH_QUEUE_TIMEOUT_MS: '30000'
+  });
+  assert.equal(maximums.limit, 32);
+  assert.equal(maximums.maxQueue, 256);
+  assert.equal(maximums.queueTimeoutMs, 30_000);
+
+  const invalid = createLoginHashLimiter({
+    MAX_CONCURRENT_LOGIN_HASHES: '0',
+    MAX_QUEUED_LOGIN_HASHES: '257',
+    LOGIN_HASH_QUEUE_TIMEOUT_MS: '99'
+  });
+  assert.equal(invalid.limit, 4);
+  assert.equal(invalid.maxQueue, 32);
+  assert.equal(invalid.queueTimeoutMs, 2_000);
 });
 
 test('3. API Authentication Middleware & Public Endpoints Whitelist', () => {

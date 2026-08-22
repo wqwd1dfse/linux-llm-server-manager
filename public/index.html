@@ -624,8 +624,8 @@
           <div class="llm-tab-content" id="llm-tab-hf">
             <div style="padding: 12px 14px; background: var(--win-toolbar); border-bottom: 1px solid var(--win-border); display: flex; flex-direction: column; gap: 8px;">
               <!-- Row 1: Search & Sorting -->
-              <div style="display: flex; gap: 10px; align-items: center;">
-                <div style="flex: 1; display: flex; gap: 6px;">
+              <div class="hf-toolbar-row" style="display: flex; gap: 10px; align-items: center;">
+                <div class="hf-toolbar-search" style="flex: 1; display: flex; gap: 6px;">
                   <input type="text" id="hf-search-query" placeholder="在 Hugging Face 搜索开源模型 (如: Qwen2.5, DeepSeek-R1, Llama-3.1, Gemma-2, Coder)..." style="flex: 1; background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 6px 12px; font-size: 12px;">
                   <select id="hf-sort-select" style="background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 6px 10px; font-size: 12px; cursor: pointer;">
                     <option value="downloads">⬇️ 最多下载 (Most Downloads)</option>
@@ -635,7 +635,7 @@
                   <button class="cmd-btn primary" id="btn-hf-search">🔍 搜索模型</button>
                 </div>
 
-                <div style="display: flex; align-items: center; gap: 12px; font-size: 11px;">
+                <div class="hf-toolbar-options" style="display: flex; align-items: center; gap: 12px; font-size: 11px;">
                   <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;">
                     <input type="checkbox" id="hf-mirror-toggle"> ⚡ 启用国内极速镜像 (hf-mirror.com)
                   </label>
@@ -644,7 +644,7 @@
               </div>
 
               <!-- Row 2: Direct Repo Jump -->
-              <div style="display: flex; gap: 10px; align-items: center; font-size: 11px;">
+              <div class="hf-direct-row" style="display: flex; gap: 10px; align-items: center; font-size: 11px;">
                 <span style="color: var(--win-text-secondary); white-space: nowrap;">⚡ 快速直达:</span>
                 <input type="text" id="hf-direct-repo-input" placeholder="输入任意 Hugging Face Repo ID (如: Qwen/Qwen2.5-7B-Instruct-GGUF, bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF)..." style="flex: 1; background: var(--win-address-bg); border: 1px solid var(--win-border); color: var(--win-text-primary); border-radius: var(--radius-win); padding: 4px 10px; font-size: 11px; font-family: var(--font-mono);">
                 <button class="cmd-btn btn-sm" id="btn-hf-direct-jump">打开仓库文件 ➔</button>
@@ -675,7 +675,7 @@
             <div class="perf-card" style="margin-bottom: 12px;">
               <div style="display: flex; justify-content: space-between; align-items: center;">
                 <div>
-                  <div class="perf-card-title">📁 大模型专用存储盘 (/mnt/models)</div>
+                  <div class="perf-card-title" id="local-model-root-title">📁 大模型专用存储盘 (/mnt/models)</div>
                   <div style="font-size: 11px; color: var(--win-text-secondary); margin-top: 2px;" id="local-disk-summary-text">存储空间: 检测中...</div>
                 </div>
                 <div style="display: flex; gap: 6px;">
@@ -1088,7 +1088,10 @@
                 </label>
                 <div class="win-form-group" style="margin: 0;">
                   <label data-i18n="settings.hf_token_label">Hugging Face 官方 Access Token (用于下载受限模型)</label>
-                  <input type="password" id="setting-hf-token" placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
+                  <div style="display: flex; gap: 6px; align-items: center;">
+                    <input type="password" id="setting-hf-token" placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" style="flex: 1; min-width: 0;">
+                    <button type="button" class="cmd-btn btn-sm danger" id="btn-clear-hf-token" data-i18n="settings.hf_token_clear">清除 Token</button>
+                  </div>
                 </div>
                 <div class="win-form-group" style="margin: 0;">
                   <label data-i18n="settings.hf_dir_label">默认本地模型下载与存储目录 (Target Directory)</label>
@@ -1166,9 +1169,9 @@
     </div>
 
     <!-- Windows 11 Bottom Status Bar -->
-    <footer class="win-statusbar" aria-label="服务器状态" aria-live="polite">
+    <footer class="win-statusbar" aria-label="服务器状态">
       <div class="status-left">
-        <span id="statusbar-conn-status">● 已就绪</span>
+        <span id="statusbar-conn-status" role="status" aria-live="polite" aria-atomic="true">● 已就绪</span>
         <span id="statusbar-host">主机: 尚未配置</span>
         <span id="statusbar-uptime">开机时长: --</span>
       </div>

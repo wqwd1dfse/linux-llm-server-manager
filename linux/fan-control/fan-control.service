@@ -1,14 +1,21 @@
 [Unit]
 Description=Generic GPU and external fan controller
-After=multi-user.target
-Wants=multi-user.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=all
 Environment=FAN_CONTROL_CONFIG=/etc/default/fan-control
 ExecStart=/usr/local/sbin/fan-control.sh
+# The daemon also restores automatic mode from its EXIT trap. ExecStopPost is
+# a second line of defense for forced termination or an early runtime failure.
+ExecStopPost=/usr/local/sbin/fan-control.sh --restore-auto
+KillSignal=SIGTERM
+TimeoutStartSec=20s
+TimeoutStopSec=15s
+SuccessExitStatus=143
 Restart=always
 RestartSec=3
+RestartPreventExitStatus=78
 
 [Install]
 WantedBy=multi-user.target

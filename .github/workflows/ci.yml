@@ -6,13 +6,36 @@ on:
   pull_request:
     branches: [ main, master ]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  fan-control-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Validate fan-control shell syntax and systemd unit
+      run: |
+        bash -n linux/fan-control/fan-control.sh
+        bash -n linux/fan-control/install.sh
+        FAN_CONTROL_CONFIG=linux/fan-control/fan-control.conf bash linux/fan-control/fan-control.sh --validate-config
+        sudo install -m 0755 linux/fan-control/fan-control.sh /usr/local/sbin/fan-control.sh
+        systemd-analyze verify linux/fan-control/fan-control.service
+
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     strategy:
       matrix:
-        node-version: [18.x, 20.x, 22.x]
+        node-version: [18.x, 20.x, 22.x, 24.x]
 
     steps:
     - uses: actions/checkout@v4
@@ -21,6 +44,7 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: ${{ matrix.node-version }}
+        cache: npm
 
     - name: Install reproducible dependencies with npm ci
       run: npm ci

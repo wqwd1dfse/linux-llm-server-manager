@@ -1,6 +1,10 @@
 // Docker Container & Image Management
 
 let currentViewingContainerId = null;
+let dockerStatusRequestSequence = 0;
+let dockerContainersRequestSequence = 0;
+let dockerImagesRequestSequence = 0;
+let dockerLogsRequestSequence = 0;
 const dockerText = (zh, en) => window.localize ? window.localize(zh, en) : en;
 
 window.initDocker = function () {
@@ -25,6 +29,24 @@ window.initDocker = function () {
   });
 };
 
+window.loadDockerContainers = loadDockerContainers;
+
+window.addEventListener('servercontextchange', () => {
+  dockerStatusRequestSequence += 1;
+  dockerContainersRequestSequence += 1;
+  dockerImagesRequestSequence += 1;
+  dockerLogsRequestSequence += 1;
+  currentViewingContainerId = null;
+  document.getElementById('docker-table-body')?.replaceChildren();
+  document.getElementById('docker-images-body')?.replaceChildren();
+  const logs = document.getElementById('docker-logs-content');
+  if (logs) logs.textContent = '';
+  window.closeModal?.('modal-docker-logs');
+  queueMicrotask(() => Promise.allSettled([
+    loadDockerStatus(), loadDockerContainers(), loadDockerImages()
+  ]));
+});
+
 window.addEventListener('languagechange', () => {
   if (window.currentView !== 'docker') return;
   loadDockerStatus();
@@ -34,8 +56,12 @@ window.addEventListener('languagechange', () => {
 
 async function loadDockerStatus() {
   const badge = document.getElementById('docker-version-badge');
+  const requestSequence = ++dockerStatusRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
   try {
     const res = await window.api.request('/api/docker/status');
+    if (requestSequence !== dockerStatusRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     if (res.installed) {
       badge.textContent = `Docker v${res.version || 'OK'}`;
       badge.style.color = '#34d399';
@@ -44,6 +70,7 @@ async function loadDockerStatus() {
       badge.style.color = '#f87171';
     }
   } catch (_) {
+    if (requestSequence !== dockerStatusRequestSequence) return;
     if (badge) badge.textContent = '检测失败';
   }
 }
@@ -51,10 +78,14 @@ async function loadDockerStatus() {
 async function loadDockerContainers() {
   const tbody = document.getElementById('docker-table-body');
   if (!tbody) return;
+  const requestSequence = ++dockerContainersRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
   tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--win-text-muted);">正在加载 Docker 容器...</td></tr>';
 
   try {
     const res = await window.api.request('/api/docker/containers');
+    if (requestSequence !== dockerContainersRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     if (!res.containers || res.containers.length === 0) {
       tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--win-text-muted); padding: 30px;">未发现任何 Docker 容器</td></tr>';
       return;
@@ -148,6 +179,7 @@ async function loadDockerContainers() {
       tbody.appendChild(tr);
     }
   } catch (err) {
+    if (requestSequence !== dockerContainersRequestSequence) return;
     tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--perf-red); padding: 30px;">' + dockerText('获取容器列表失败: ', 'Failed to load containers: ') + window.escapeHtml(err.message) + '</td></tr>';
   }
 }
@@ -178,12 +210,18 @@ async function viewDockerLogs(id, name) {
 async function loadContainerLogs(id) {
   const box = document.getElementById('docker-logs-content');
   if (!box) return;
+  const requestSequence = ++dockerLogsRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
   box.textContent = '正在拉取日志...';
   try {
     const res = await window.api.request(`/api/docker/containers/${encodeURIComponent(id)}/logs?tail=200`);
+    if (requestSequence !== dockerLogsRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)
+      || currentViewingContainerId !== id) return;
     box.textContent = res.logs || '无日志输出';
     box.scrollTop = box.scrollHeight;
   } catch (err) {
+    if (requestSequence !== dockerLogsRequestSequence) return;
     box.textContent = `加载日志失败: ${err.message}`;
   }
 }
@@ -191,9 +229,13 @@ async function loadContainerLogs(id) {
 async function loadDockerImages() {
   const tbody = document.getElementById('docker-images-body');
   if (!tbody) return;
+  const requestSequence = ++dockerImagesRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
 
   try {
     const res = await window.api.request('/api/docker/images');
+    if (requestSequence !== dockerImagesRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     if (!res.images || res.images.length === 0) {
       tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--win-text-muted); padding: 30px;">暂无本地镜像</td></tr>';
       return;
@@ -246,6 +288,7 @@ async function loadDockerImages() {
       tbody.appendChild(tr);
     }
   } catch (err) {
+    if (requestSequence !== dockerImagesRequestSequence) return;
     tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--perf-red); padding: 30px;">获取镜像失败: ${window.escapeHtml(err.message)}</td></tr>`;
   }
 }

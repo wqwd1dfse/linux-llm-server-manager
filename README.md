@@ -31,7 +31,7 @@ Security controls include:
 
 - Loopback-only default binding.
 - PBKDF2-HMAC-SHA512 password hashing with 220,000 iterations.
-- Signed `HttpOnly`, `SameSite=Lax` session cookies.
+- Signed `HttpOnly`, `SameSite=Strict` session cookies.
 - Login rate limiting and expiring server-side sessions.
 - SSH host-key trust-on-first-use verification that rejects changed fingerprints by default.
 - Array-based command execution without shell string interpolation.
@@ -40,6 +40,8 @@ Security controls include:
 - In-memory SSH credentials unless local persistence is explicitly enabled.
 - Archive traversal, symlink, entry-count, and expanded-size defenses.
 - Permission-restricted temporary curl configuration for remote Hugging Face downloads.
+- Opaque per-process SSH target epochs on HTTP and WebSocket requests, plus cross-tab synchronization, prevent a stale browser tab from acting on a newly selected server.
+- Manager-owned LLM/download processes persist a private ownership token, PID start time, and runtime state so restart or ambiguous SSH responses can be recovered without broadly signaling unrelated processes.
 
 Rotate any real credentials used during development and verify that secrets have never been committed to Git history.
 
@@ -47,7 +49,7 @@ Rotate any real credentials used during development and verify that secrets have
 
 Requirements:
 
-- Node.js 18 or newer; Node.js 20 LTS or 22 is recommended.
+- Node.js 18 or newer; Node.js 20, 22, or 24 is recommended.
 - npm 9 or newer.
 - A Linux server reachable over SSH.
 
@@ -83,7 +85,7 @@ Download and install it on the target host:
     cd linux-llm-server-manager/linux/fan-control
     sudo ./install.sh
 
-Review /etc/default/fan-control before unattended use because hwmon PWM node layouts vary by motherboard and GPU. See linux/fan-control/README.md for configuration and rollback instructions.
+Review /etc/default/fan-control before unattended use because hwmon PWM node layouts vary by motherboard and GPU. Fan-curve thresholds must increase, PWM values must not decrease, and the highest-temperature GPU/fan values must remain at 100%. See linux/fan-control/README.md for configuration and rollback instructions.
 
 ## Configuration
 
@@ -94,8 +96,10 @@ HOST=127.0.0.1
 PORT=3888
 
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=your_secure_admin_password_here
-SESSION_SECRET=change_this_to_a_random_long_string_in_production
+# Leave empty for the loopback-only first-run setup, or set a unique 12+ character value.
+ADMIN_PASSWORD=
+# Set a stable random value of at least 32 UTF-8 bytes when persistent sessions are required.
+SESSION_SECRET=
 
 AUTO_CONNECT=true
 ALLOW_REMOTE_SETUP=false
@@ -112,9 +116,29 @@ MAX_UPLOAD_FILE_MB=512
 MAX_UPLOAD_FILES=10
 MAX_ARCHIVE_ENTRIES=10000
 MAX_ARCHIVE_EXPANDED_MB=102400
+
+# Backpressure / connection safety limits
+PORT_FALLBACK_LIMIT=10
+SHUTDOWN_GRACE_MS=10000
+MAX_CONCURRENT_LOGIN_HASHES=4
+MAX_QUEUED_LOGIN_HASHES=32
+LOGIN_HASH_QUEUE_TIMEOUT_MS=2000
+MAX_QUEUED_SSH_CONNECTIONS=8
+SSH_CONNECTION_QUEUE_TIMEOUT_MS=30000
+MAX_CONCURRENT_SSH_COMMANDS=12
+MAX_QUEUED_SSH_COMMANDS=64
+SSH_COMMAND_QUEUE_TIMEOUT_MS=10000
+MAX_CONCURRENT_SFTP_CHANNELS=8
+MAX_QUEUED_SFTP_OPERATIONS=32
+SFTP_QUEUE_TIMEOUT_MS=10000
+MAX_ACTIVE_MODEL_DOWNLOADS=4
+MAX_TERMINAL_WEBSOCKETS=32
+MAX_METRICS_WEBSOCKETS=64
 ```
 
-Keep `HOST` and `LLM_BIND_HOST` on loopback by default. Enable `TRUST_PROXY` only for a known reverse proxy topology, and enable custom scripts only for trusted administrators.
+Keep `HOST` and `LLM_BIND_HOST` on loopback by default. Enable `TRUST_PROXY` only for a known reverse proxy topology, and enable custom scripts only for trusted administrators. SSH target switches are serialized and have their own bounded waiting queue. Password hashing, SSH commands, SFTP operations, and model downloads use separate bounded queues; raise their defaults only after sizing Node's worker pool and the remote SSH, disk, and network capacity. Login hash settings accept 1-32 active jobs, 0-256 queued jobs, and a 100-30000 ms queue timeout; invalid values fall back to the safe defaults above.
+
+Do not put example or shared passwords in `ADMIN_PASSWORD`. The server rejects the public placeholders from older sample files instead of silently turning them into working credentials. An explicitly configured `SESSION_SECRET` must contain at least 32 bytes and cannot be an example placeholder.
 
 ## Languages
 
@@ -142,7 +166,7 @@ The frontend uses native JavaScript and Express without a build step or extra ru
 npm test
 ```
 
-Tests cover authentication, atomic persistence, strict SSH host-key pinning, sessions, rate limiting, HTTP error flows, WebSocket Origin checks, command-injection defenses, LLM validation, model-path boundaries, archive allowlists, telemetry retention, escaped Markdown, frontend hardening, and internationalization regressions. CI runs on Node.js 18, 20, and 22.
+Tests cover authentication, atomic persistence, strict SSH host-key pinning, sessions, rate limiting, HTTP error flows, WebSocket Origin checks, command-injection defenses, LLM validation, model-path boundaries, archive allowlists, telemetry retention, escaped Markdown, frontend hardening, and internationalization regressions. CI runs on Node.js 18, 20, 22, and 24.
 
 ## Production deployment
 

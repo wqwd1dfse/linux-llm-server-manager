@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { METRICS_SHELL, metricsCollector, parseBlockDevices, parseGpuDevices } from '../server/metricsCollector.js';
+import { METRICS_SHELL, MetricsCollector, metricsCollector, parseBlockDevices, parseGpuDevices } from '../server/metricsCollector.js';
 
 test('MetricsCollector: uses Bash for its Bash-array telemetry script', () => {
   assert.equal(METRICS_SHELL, 'bash');
@@ -75,4 +75,183 @@ test('MetricsCollector: NVIDIA telemetry wins over duplicate DRM inventory', () 
   assert.equal(gpu.type, 'nvidia');
   assert.equal(gpu.devices[0].name, 'NVIDIA RTX 4090');
   assert.equal(gpu.devices[0].powerDraw, '320.5 W');
+});
+
+test('MetricsCollector: stop remains final while an in-flight collection finishes', async () => {
+  const collector = new MetricsCollector();
+  let releaseCollection;
+  let collectionStarted;
+  const started = new Promise((resolve) => { collectionStarted = resolve; });
+  collector.collect = async () => {
+    collectionStarted();
+    await new Promise((resolve) => { releaseCollection = resolve; });
+    return null;
+  };
+
+  collector.start(0);
+  await started;
+  collector.stop();
+  releaseCollection();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(collector.running, false);
+  assert.equal(collector.timer, null);
+});
+
+function targetChangedError() {
+  const error = new Error('Target server changed while the remote operation was pending');
+  error.code = 'SSH_TARGET_CHANGED';
+  return error;
+}
+
+function minimalMetricsOutput(hostname = 'metrics-host') {
+  return [
+    '---SYSINFO---',
+    hostname,
+    '6.12.0',
+    'x86_64',
+    'NAME=Linux',
+    '10.0 0.0',
+    '---CPU---',
+    '0.10 0.20 0.30 1/1 1',
+    'CPU_MEASURED: 125',
+    '---MEM---',
+    'MemTotal: 1024 kB',
+    'MemAvailable: 512 kB',
+    '---DISK---',
+    'Filesystem 1-blocks Used Available Capacity Mounted on',
+    '---DISK_INODES---',
+    'Filesystem Inodes IUsed IFree IUse% Mounted on',
+    '---DISKSTATS---',
+    '---BLOCK_DEVICES---',
+    '---NET---',
+    '---GPU---',
+    '---TOP_CPU_MEM---',
+    'PID USER %CPU %MEM COMMAND'
+  ].join('\n');
+}
+
+test('MetricsCollector: binds collection to its initial target and drops a stale completion', async () => {
+  let connection = { connected: true, host: 'root@alpha:22' };
+  let generation = 7;
+  let releaseCommand;
+  let markCommandStarted;
+  let receivedOptions;
+  const commandStarted = new Promise((resolve) => { markCommandStarted = resolve; });
+  const commandGate = new Promise((resolve) => { releaseCommand = resolve; });
+
+  const collector = new MetricsCollector({
+    getConnectionStatusFn: () => ({ ...connection }),
+    captureTargetContextFn: () => Object.freeze({ generation, targetId: connection.host }),
+    assertTargetContextFn: (context) => {
+      if (context.generation !== generation || context.targetId !== connection.host) {
+        throw targetChangedError();
+      }
+      return true;
+    },
+    executeCommandFn: async (_shell, _args, options) => {
+      receivedOptions = options;
+      markCommandStarted();
+      await commandGate;
+      return { success: true, stdout: minimalMetricsOutput('alpha') };
+    }
+  });
+  collector.currentHost = connection.host;
+  collector.currentTargetGeneration = generation;
+  collector.latestSnapshot = { os: { hostname: 'previous-alpha' } };
+  collector.history = [{ t: Date.now(), cpu: 1 }];
+  const notifications = [];
+  collector.addListener((snapshot) => notifications.push(snapshot));
+
+  const pending = collector.collect();
+  await commandStarted;
+  connection = { connected: true, host: 'root@bravo:22' };
+  generation += 1;
+  releaseCommand();
+
+  assert.equal(await pending, null);
+  assert.deepEqual(receivedOptions.expectedTargetContext, {
+    generation: 7,
+    targetId: 'root@alpha:22'
+  });
+  assert.equal(collector.latestSnapshot, null);
+  assert.equal(collector.currentHost, 'root@bravo:22');
+  assert.equal(collector.currentTargetGeneration, 8);
+  assert.deepEqual(collector.history, []);
+  assert.deepEqual(notifications, [null]);
+});
+
+test('MetricsCollector: a new target cannot reuse a snapshot while the old target is collecting', async () => {
+  let connection = { connected: true, host: 'root@alpha:22' };
+  let generation = 3;
+  let releaseCommand;
+  let markCommandStarted;
+  const commandStarted = new Promise((resolve) => { markCommandStarted = resolve; });
+  const commandGate = new Promise((resolve) => { releaseCommand = resolve; });
+
+  const collector = new MetricsCollector({
+    getConnectionStatusFn: () => ({ ...connection }),
+    captureTargetContextFn: () => Object.freeze({ generation, targetId: connection.host }),
+    assertTargetContextFn: (context) => {
+      if (context.generation !== generation || context.targetId !== connection.host) {
+        throw targetChangedError();
+      }
+      return true;
+    },
+    executeCommandFn: async () => {
+      markCommandStarted();
+      await commandGate;
+      return { success: true, stdout: minimalMetricsOutput('alpha') };
+    }
+  });
+  collector.latestSnapshot = { os: { hostname: 'alpha-cache' } };
+  collector.currentHost = connection.host;
+  collector.currentTargetGeneration = generation;
+
+  const alphaCollection = collector.collect();
+  await commandStarted;
+  connection = { connected: true, host: 'root@bravo:22' };
+  generation += 1;
+
+  assert.equal(await collector.collect(), null);
+  assert.equal(collector.latestSnapshot, null);
+  assert.equal(collector.currentHost, 'root@bravo:22');
+
+  releaseCommand();
+  assert.equal(await alphaCollection, null);
+});
+
+test('MetricsCollector: drops a completion after transport disconnect even without a generation bump', async () => {
+  let connection = { connected: true, host: 'root@alpha:22' };
+  const generation = 12;
+  let releaseCommand;
+  let markCommandStarted;
+  const commandStarted = new Promise((resolve) => { markCommandStarted = resolve; });
+  const commandGate = new Promise((resolve) => { releaseCommand = resolve; });
+
+  const collector = new MetricsCollector({
+    getConnectionStatusFn: () => ({ ...connection }),
+    captureTargetContextFn: () => Object.freeze({ generation, targetId: connection.host }),
+    assertTargetContextFn: () => true,
+    executeCommandFn: async () => {
+      markCommandStarted();
+      await commandGate;
+      return { success: true, stdout: minimalMetricsOutput('alpha') };
+    }
+  });
+  collector.currentHost = connection.host;
+  collector.currentTargetGeneration = generation;
+  collector.latestSnapshot = { os: { hostname: 'previous-alpha' } };
+  const notifications = [];
+  collector.addListener((snapshot) => notifications.push(snapshot));
+
+  const pending = collector.collect();
+  await commandStarted;
+  connection = { connected: false, host: 'root@alpha:22' };
+  releaseCommand();
+
+  assert.equal(await pending, null);
+  assert.equal(collector.latestSnapshot, null);
+  assert.equal(collector.currentTargetGeneration, null);
+  assert.deepEqual(notifications, [null]);
 });

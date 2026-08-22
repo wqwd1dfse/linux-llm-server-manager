@@ -2,7 +2,18 @@
 
 let metricsWs = null;
 let latestMetricsData = null;
+let metricsReconnectTimer = null;
+let dashboardInitialized = false;
 const dashboardText = (zh, en) => window.localize ? window.localize(zh, en) : en;
+
+function finiteDashboardNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function dashboardPercent(value) {
+  return Math.min(100, Math.max(0, finiteDashboardNumber(value)));
+}
 
 function formatDashboardUptime(seconds, fallback = '') {
   const value = Number(seconds);
@@ -35,43 +46,115 @@ function formatSpeed(bytesPerSec) {
 }
 
 window.initDashboard = function () {
+  dashboardInitialized = true;
   connectMetricsWs();
 };
+
+window.addEventListener('servercontextchange', () => {
+  latestMetricsData = null;
+  disconnectMetricsWs();
+  clearDashboardServerState();
+  if (dashboardInitialized) queueMicrotask(connectMetricsWs);
+});
 
 window.addEventListener('languagechange', () => {
   if (latestMetricsData) updateMonitorsUI(latestMetricsData);
 });
 
+function disconnectMetricsWs() {
+  if (metricsReconnectTimer) {
+    clearTimeout(metricsReconnectTimer);
+    metricsReconnectTimer = null;
+  }
+  const socket = metricsWs;
+  metricsWs = null;
+  if (!socket) return;
+  socket.onopen = null;
+  socket.onmessage = null;
+  socket.onclose = null;
+  socket.onerror = null;
+  try { socket.close(); } catch (_) {}
+}
+
+function scheduleMetricsReconnect(connectionEpoch) {
+  if (!dashboardInitialized
+    || connectionEpoch !== (window.getServerContextEpoch?.() ?? 0)
+    || metricsReconnectTimer) return;
+  metricsReconnectTimer = setTimeout(() => {
+    metricsReconnectTimer = null;
+    connectMetricsWs();
+  }, 3000);
+}
+
+function markDashboardDisconnected() {
+  latestMetricsData = null;
+  clearDashboardServerState();
+  window.updateConnectionStatus(false);
+}
+
 function connectMetricsWs() {
-  if (metricsWs && metricsWs.readyState === WebSocket.OPEN) return;
+  if (metricsWs
+    && (metricsWs.readyState === WebSocket.OPEN || metricsWs.readyState === WebSocket.CONNECTING)) return;
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/ws/metrics`;
+  const wsPath = window.withSshTargetEpochUrl?.('/ws/metrics') || '/ws/metrics';
+  const wsUrl = `${protocol}//${window.location.host}${wsPath}`;
+  const connectionEpoch = window.getServerContextEpoch?.() ?? 0;
 
   try {
-    metricsWs = new WebSocket(wsUrl);
+    const socket = new WebSocket(wsUrl);
+    metricsWs = socket;
 
-    metricsWs.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (socket !== metricsWs
+        || connectionEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
       try {
         const msg = JSON.parse(event.data);
+        if (msg.targetEpoch && msg.targetEpoch !== window.getSshTargetEpoch?.()) {
+          window.dispatchEvent(new CustomEvent('sshtargetstale', { detail: msg }));
+          return;
+        }
         if (msg.type === 'metrics' && msg.data) {
           updateMonitorsUI(msg.data);
-        } else if (msg.type === 'status' && !msg.connected) {
-          window.updateConnectionStatus(false);
+        } else if ((msg.type === 'status' || msg.type === 'error') && !msg.connected) {
+          markDashboardDisconnected();
         }
       } catch (e) {
         console.error('Error parsing metrics WS message:', e);
       }
     };
 
-    metricsWs.onclose = () => {
-      setTimeout(connectMetricsWs, 3000);
+    socket.onclose = () => {
+      if (socket !== metricsWs) return;
+      metricsWs = null;
+      markDashboardDisconnected();
+      scheduleMetricsReconnect(connectionEpoch);
     };
 
-    metricsWs.onerror = () => {};
+    socket.onerror = () => {};
   } catch (err) {
     console.error('WebSocket connection failed:', err);
+    scheduleMetricsReconnect(connectionEpoch);
   }
+}
+
+function clearDashboardServerState() {
+  const placeholder = dashboardText('正在等待新服务器数据…', 'Waiting for the new server…');
+  [
+    'cpu-main-val', 'gpu-main-val', 'ram-main-val', 'ssd-main-io',
+    'cpu-main-sub', 'gpu-main-sub', 'ram-main-avail',
+    'cpu-prop-model', 'cpu-prop-cores', 'cpu-prop-freq', 'cpu-prop-cache', 'cpu-prop-arch', 'cpu-prop-load',
+    'ram-prop-total', 'ram-prop-used', 'ram-prop-avail', 'ram-prop-free', 'ram-prop-cached',
+    'ram-prop-buffers', 'ram-prop-slab', 'ram-prop-swap',
+    'statusbar-cpu', 'statusbar-ram', 'statusbar-net', 'statusbar-uptime'
+  ].forEach((id) => setText(id, '--'));
+  ['cpu-main-model', 'gpu-main-name', 'ram-main-usage', 'ssd-main-total'].forEach((id) => setText(id, placeholder));
+  ['cpu-main-progress', 'ram-main-progress'].forEach((id) => {
+    const bar = document.getElementById(id);
+    if (bar) bar.style.width = '0%';
+  });
+  ['cpu-top-processes-body', 'ram-top-processes-body', 'ssd-table-body', 'disk-devices-body', 'gpu-container-content']
+    .forEach((id) => document.getElementById(id)?.replaceChildren());
 }
 
 function updateMonitorsUI(data) {
@@ -81,7 +164,7 @@ function updateMonitorsUI(data) {
   window.updateConnectionStatus(true, uptimeText);
 
   // 1. CPU Detailed Monitor
-  const cpuPercent = data.cpu?.usagePercent !== undefined ? data.cpu.usagePercent : 0;
+  const cpuPercent = dashboardPercent(data.cpu?.usagePercent);
   const cpuVal = document.getElementById('cpu-main-val');
   const cpuModel = document.getElementById('cpu-main-model');
   const cpuSub = document.getElementById('cpu-main-sub');
@@ -132,28 +215,35 @@ function updateMonitorsUI(data) {
       if (gpuSub) gpuSub.innerText = 'VRAM: ' + (firstGpu.memoryUsedMb || '--') + ' / ' + (firstGpu.memoryTotalMb || '--') + ' MB | ' + dashboardText('驱动', 'Driver') + ': ' + (firstGpu.driverVersion || 'Generic');
 
       if (gpuContainer) {
-        gpuContainer.innerHTML = data.gpu.devices.map(g => `
+        gpuContainer.innerHTML = data.gpu.devices.map(g => {
+          const gpuUsage = dashboardPercent(g.utilizationGpu);
+          const memoryUsage = dashboardPercent(g.utilizationMemory);
+          const parsedTemperature = Number(g.temperature);
+          const temperature = Number.isFinite(parsedTemperature) ? parsedTemperature : null;
+          const alarmThreshold = window.getTemperatureAlarmThreshold?.() || 80;
+          return `
           <div class="perf-card">
             <div class="perf-card-title">${window.escapeHtml(g.name)} (GPU #${window.escapeHtml(g.index)})</div>
             <div class="perf-grid-2" style="margin-top: 6px;">
               <div>
-                <div class="win-prop-row"><span class="prop-name">核心利用率</span><span class="prop-val">${window.escapeHtml(g.utilizationGpu || 0)}%</span></div>
+                <div class="win-prop-row"><span class="prop-name">核心利用率</span><span class="prop-val">${gpuUsage}%</span></div>
                 <div class="win-progress" style="margin: 4px 0 8px 0;">
-                  <div class="win-progress-bar ${(g.utilizationGpu || 0) > 85 ? 'red' : 'green'}" style="width: ${Math.max(g.utilizationGpu || 0, 2)}%;"></div>
+                  <div class="win-progress-bar ${gpuUsage > 85 ? 'red' : 'green'}" style="width: ${Math.max(gpuUsage, 2)}%;"></div>
                 </div>
                 <div class="win-prop-row"><span class="prop-name">专用显存 (VRAM)</span><span class="prop-val">${window.escapeHtml(g.memoryUsedMb || '--')} / ${window.escapeHtml(g.memoryTotalMb || '--')} MB</span></div>
                 <div class="win-progress" style="margin: 4px 0;">
-                  <div class="win-progress-bar yellow" style="width: ${Math.max(g.utilizationMemory || 0, 2)}%;"></div>
+                  <div class="win-progress-bar yellow" style="width: ${Math.max(memoryUsage, 2)}%;"></div>
                 </div>
               </div>
               <div>
-                <div class="win-prop-row"><span class="prop-name">核心温度</span><span class="prop-val" style="color: ${(g.temperature || 0) > 75 ? '#f14c4c' : 'inherit'};">${g.temperature !== null ? `${g.temperature} °C` : 'N/A'}</span></div>
+                <div class="win-prop-row"><span class="prop-name">核心温度</span><span class="prop-val" style="color: ${temperature !== null && temperature >= alarmThreshold ? '#f14c4c' : 'inherit'};">${temperature !== null ? `${temperature} °C` : 'N/A'}</span></div>
                 <div class="win-prop-row"><span class="prop-name">功耗 (Power Draw)</span><span class="prop-val">${g.powerDraw ? window.escapeHtml(g.powerDraw) : 'N/A'}</span></div>
                 <div class="win-prop-row"><span class="prop-name">显卡驱动程序</span><span class="prop-val">${window.escapeHtml(g.driverVersion || '--')}</span></div>
               </div>
             </div>
           </div>
-        `).join('');
+        `;
+        }).join('');
       }
     } else {
       if (gpuVal) gpuVal.innerText = dashboardText('正常', 'Healthy');
@@ -186,7 +276,7 @@ function updateMonitorsUI(data) {
   }
 
   // 3. RAM Detailed Monitor
-  const memPercent = data.memory?.usagePercent !== undefined ? data.memory.usagePercent : 0;
+  const memPercent = dashboardPercent(data.memory?.usagePercent);
   const ramVal = document.getElementById('ram-main-val');
   const ramUsage = document.getElementById('ram-main-usage');
   const ramAvail = document.getElementById('ram-main-avail');
@@ -281,7 +371,9 @@ function updateMonitorsUI(data) {
     if (data.disk.partitions.length === 0) {
       ssdTbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--win-text-muted);">未发现挂载的磁盘卷</td></tr>';
     } else {
-      ssdTbody.innerHTML = data.disk.partitions.map(d => `
+      ssdTbody.innerHTML = data.disk.partitions.map(d => {
+        const percent = dashboardPercent(d.percent);
+        return `
         <tr>
           <td style="font-weight: 600; font-family: var(--font-mono); color: var(--win-text-primary);">${window.escapeHtml(d.mount)}</td>
           <td style="color: var(--win-text-secondary); font-family: var(--font-mono);">${window.escapeHtml(d.filesystem)}</td>
@@ -291,16 +383,17 @@ function updateMonitorsUI(data) {
           <td>
             <div style="display: flex; align-items: center; gap: 6px;">
               <div class="win-progress" style="width: 70px; height: 8px;">
-                <div class="win-progress-bar ${d.percent > 85 ? 'red' : d.percent > 65 ? 'yellow' : 'green'}" style="width: ${d.percent}%;"></div>
+                <div class="win-progress-bar ${percent > 85 ? 'red' : percent > 65 ? 'yellow' : 'green'}" style="width: ${percent}%;"></div>
               </div>
-              <span style="font-size: 11px; font-family: var(--font-mono);">${window.escapeHtml(d.percent)}%</span>
+              <span style="font-size: 11px; font-family: var(--font-mono);">${percent}%</span>
             </div>
           </td>
           <td style="font-family: var(--font-mono); font-size: 11px; color: var(--win-text-secondary);">
             ${d.inodes ? `${window.escapeHtml(d.inodes.used)}/${window.escapeHtml(d.inodes.total)} (${window.escapeHtml(d.inodes.percent)})` : '-'}
           </td>
         </tr>
-      `).join('');
+      `;
+      }).join('');
     }
   }
 

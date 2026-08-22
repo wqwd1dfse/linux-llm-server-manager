@@ -912,6 +912,11 @@
   padding-top: 6px;
 }
 
+.chat-stream-plaintext {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .chat-bubble-speed {
   font-size: 10px;
   font-family: var(--font-mono);

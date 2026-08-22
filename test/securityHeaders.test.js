@@ -24,6 +24,17 @@ test('SecurityHeaders: HTTP Security middleware', () => {
   assert.equal(headers['Cross-Origin-Opener-Policy'], 'same-origin');
 });
 
+test('SecurityHeaders: authenticated API data is never cacheable', () => {
+  const headers = {};
+  const req = { path: '/api/system/metrics', method: 'GET', headers: {}, secure: false };
+  const res = { setHeader: (name, value) => { headers[name] = value; } };
+  let nextCalled = false;
+  applySecurityHeaders(req, res, () => { nextCalled = true; });
+  assert.equal(nextCalled, true);
+  assert.equal(headers['Cache-Control'], 'no-store, max-age=0');
+  assert.equal(headers.Pragma, 'no-cache');
+});
+
 test('SecurityHeaders: WebSocket Origin verification', () => {
   // Allow empty origin (direct tool / CLI)
   assert.equal(verifyWebSocketOrigin({ headers: {} }), true);
@@ -42,4 +53,34 @@ test('SecurityHeaders: WebSocket Origin verification', () => {
   assert.equal(verifyWebSocketOrigin({
     headers: { origin: 'http://malicious-hacker.com', host: '127.0.0.1:3888' }
   }), false);
+
+  // Browser WebSocket origins are HTTP(S); matching hosts on other schemes
+  // must not bypass the origin policy.
+  assert.equal(verifyWebSocketOrigin({
+    headers: { origin: 'ftp://127.0.0.1:3888', host: '127.0.0.1:3888' }
+  }), false);
+});
+
+test('SecurityHeaders: unsafe API requests reject cross-site browser origins', () => {
+  let statusCode = 200;
+  let responseBody = null;
+  let nextCalled = false;
+  const req = {
+    method: 'POST',
+    path: '/api/docker/images/delete',
+    secure: false,
+    headers: { origin: 'https://evil.example', host: 'manager.example' }
+  };
+  const res = {
+    setHeader() {},
+    status(code) { statusCode = code; return this; },
+    json(body) { responseBody = body; return this; },
+    end() {}
+  };
+
+  applySecurityHeaders(req, res, () => { nextCalled = true; });
+
+  assert.equal(nextCalled, false);
+  assert.equal(statusCode, 403);
+  assert.equal(responseBody.success, false);
 });

@@ -3,11 +3,58 @@
 const fanText = (zh, en) => window.localize ? window.localize(zh, en) : en;
 
 let fanPollingTimer = null;
+let fanPollingGeneration = 0;
 let currentFanHistoryRange = '5m';
 let fanHistoryPoints = [];
 let fanHoverIndex = -1;
 let activePresetMode = 'auto';
 let fanStatusRequestSequence = 0;
+let fanHistoryRequestSequence = 0;
+let fanLogsRequestSequence = 0;
+let fanLogsAbortController = null;
+
+function finiteFanNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatFanReading(value, unit) {
+  const number = finiteFanNumber(value);
+  return number === null ? 'N/A' : `${number} ${unit}`;
+}
+
+window.addEventListener('servercontextchange', () => {
+  fanStatusRequestSequence += 1;
+  fanHistoryRequestSequence += 1;
+  fanLogsRequestSequence += 1;
+  fanLogsAbortController?.abort();
+  fanLogsAbortController = null;
+  fanHistoryPoints = [];
+  fanHoverIndex = -1;
+  activePresetMode = null;
+  document.getElementById('cpu-cores-temp-grid')?.replaceChildren();
+  document.getElementById('disk-temps-container')?.replaceChildren();
+  const tooltip = document.getElementById('fan-chart-tooltip');
+  tooltip?.replaceChildren();
+  if (tooltip) tooltip.style.display = 'none';
+  window.closeModal?.('modal-fan-logs');
+  [
+    'fan-service-badge', 'fan-main-rpm', 'fan-cpu-status',
+    'fan-main-pwm', 'fan-cpu-pwm', 'fan-cpu-rpm', 'fan-gpu-pwm', 'fan-gpu-rpm', 'fan-aux-pwm',
+    'temp-cpu-package', 'temp-cpu-diode', 'temp-cpu-peci',
+    'temp-gpu-junction', 'temp-gpu-mem', 'temp-gpu-edge', 'temp-gpu-power',
+    'temp-sys-board', 'temp-sys-aux', 'temp-sys-wifi',
+    'chart-legend-cpu', 'chart-legend-gpuj', 'chart-legend-gpue', 'chart-legend-gpup', 'chart-legend-fan',
+    'stat-cpu-summary', 'stat-gpuj-summary', 'stat-gpup-summary', 'stat-fan-summary'
+  ]
+    .forEach((id) => setText(id, '--'));
+  ['fan-main-progress', 'fan-cpu-progress', 'fan-gpu-progress', 'fan-aux-progress'].forEach((id) => setProgressBar(id, 0));
+  if (window.currentView === 'fan') drawFanHistoryCanvas();
+  queueMicrotask(() => {
+    loadFanStatus(false);
+    if (window.currentView === 'fan') loadFanHistory(currentFanHistoryRange, false);
+  });
+});
 
 window.initFan = function () {
   loadFanStatus(false);
@@ -32,20 +79,28 @@ window.addEventListener('languagechange', () => {
 });
 
 function startFanPolling() {
+  const pollingGeneration = ++fanPollingGeneration;
   if (fanPollingTimer) clearTimeout(fanPollingTimer);
+  fanPollingTimer = null;
   const poll = async () => {
+    if (pollingGeneration !== fanPollingGeneration) return;
+    fanPollingTimer = null;
     if (window.currentView === 'fan' && !document.hidden) {
       await Promise.allSettled([
         loadFanStatus(false),
         loadFanHistory(currentFanHistoryRange, false)
       ]);
     }
+    if (pollingGeneration !== fanPollingGeneration) return;
     fanPollingTimer = setTimeout(poll, window.getPollingInterval?.() || 2500);
   };
   fanPollingTimer = setTimeout(poll, window.getPollingInterval?.() || 2500);
 }
 
-window.addEventListener('preferenceschange', startFanPolling);
+window.addEventListener('preferenceschange', () => {
+  startFanPolling();
+  if (window.currentView === 'fan') drawFanHistoryCanvas();
+});
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && window.currentView === 'fan') startFanPolling();
 });
@@ -55,10 +110,12 @@ document.addEventListener('visibilitychange', () => {
 // ----------------------------------------------------
 async function loadFanStatus(showToast = false) {
   const requestSequence = ++fanStatusRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
   try {
     const res = await window.api.request('/api/fan/status');
     // A slower earlier SSH request must not overwrite a newer sensor snapshot.
-    if (requestSequence !== fanStatusRequestSequence) return;
+    if (requestSequence !== fanStatusRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     const d = res.data;
     if (!d) return;
 
@@ -115,12 +172,15 @@ async function loadFanStatus(showToast = false) {
         if (tCpu.cores.length === 0) {
           coreGrid.innerHTML = '<span style="color: var(--win-text-muted); font-size: 11px;">无每核心独立测温数据</span>';
         } else {
-          coreGrid.innerHTML = tCpu.cores.map(c => `
+          coreGrid.innerHTML = tCpu.cores.map(c => {
+            const temperature = finiteFanNumber(c.temp);
+            return `
             <div class="sensor-chip">
               <span class="sensor-chip-name">${window.escapeHtml(c.name)}</span>
-              <span class="sensor-chip-val" style="color: ${getTempColorCode(c.temp)}">${c.temp !== null ? `${c.temp} °C` : 'N/A'}</span>
+              <span class="sensor-chip-val" style="color: ${getTempColorCode(temperature)}">${temperature !== null ? `${temperature} °C` : 'N/A'}</span>
             </div>
-          `).join('');
+          `;
+          }).join('');
         }
       }
     }
@@ -144,12 +204,15 @@ async function loadFanStatus(showToast = false) {
         if (d.temperatures.disks.length === 0) {
           diskBox.innerHTML = '<span style="color: var(--win-text-muted); font-size: 11px;">未检测到支持 SMART 测温的磁盘</span>';
         } else {
-          diskBox.innerHTML = d.temperatures.disks.map(dk => `
+          diskBox.innerHTML = d.temperatures.disks.map(dk => {
+            const temperature = finiteFanNumber(dk.temp);
+            return `
             <div class="sensor-chip" style="min-width: 130px;">
               <span class="sensor-chip-name">💾 ${window.escapeHtml(dk.name)}</span>
-              <span class="sensor-chip-val" style="color: ${getTempColorCode(dk.temp)}">${dk.temp !== null && dk.temp > 0 ? `${dk.temp} °C` : 'N/A'}</span>
+              <span class="sensor-chip-val" style="color: ${getTempColorCode(temperature)}">${temperature !== null && temperature > 0 ? `${temperature} °C` : 'N/A'}</span>
             </div>
-          `).join('');
+          `;
+          }).join('');
         }
       }
     }
@@ -339,8 +402,12 @@ function setupFanHistoryChart() {
 }
 
 async function loadFanHistory(range = '5m', showToast = false) {
+  const requestSequence = ++fanHistoryRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
   try {
-    const res = await window.api.request(`/api/fan/history?range=${range}`);
+    const res = await window.api.request(`/api/fan/history?range=${encodeURIComponent(range)}`);
+    if (requestSequence !== fanHistoryRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     const { points, stats } = res.data;
     fanHistoryPoints = points || [];
 
@@ -362,6 +429,7 @@ async function loadFanHistory(range = '5m', showToast = false) {
 
     drawFanHistoryCanvas();
   } catch (err) {
+    if (requestSequence !== fanHistoryRequestSequence) return;
     if (showToast) console.error('Failed to load history:', err);
   }
 }
@@ -450,21 +518,26 @@ function drawFanHistoryCanvas() {
   }
   ctx.setLineDash([]);
 
-  // Alarm Line (80°C)
-  const y80 = padTop + plotH - (80 / 100) * plotH;
+  // User-configured thermal alarm reference line.
+  const alarmThreshold = window.getTemperatureAlarmThreshold?.() || 80;
+  const yAlarm = padTop + plotH - (alarmThreshold / 100) * plotH;
   ctx.beginPath();
   ctx.setLineDash([6, 6]);
   ctx.strokeStyle = 'rgba(239, 68, 68, 0.35)';
   ctx.lineWidth = 1;
-  ctx.moveTo(padLeft, y80);
-  ctx.lineTo(padLeft + plotW, y80);
+  ctx.moveTo(padLeft, yAlarm);
+  ctx.lineTo(padLeft + plotW, yAlarm);
   ctx.stroke();
   ctx.setLineDash([]);
 
   ctx.fillStyle = 'rgba(239, 68, 68, 0.6)';
   ctx.textAlign = 'left';
   ctx.font = '9px system-ui, sans-serif';
-  ctx.fillText(fanText('⚠️ 80°C 警戒线', '⚠️ 80°C alert threshold'), padLeft + 6, y80 - 4);
+  ctx.fillText(
+    fanText(`⚠️ ${alarmThreshold}°C 警戒线`, `⚠️ ${alarmThreshold}°C alert threshold`),
+    padLeft + 6,
+    yAlarm - 4
+  );
 
   // Time labels
   ctx.fillStyle = textColor;
@@ -564,10 +637,10 @@ function handleChartMouseMove(e) {
       <span>🕒 ${window.escapeHtml(timeStr)}</span>
     </div>
     <div style="display: flex; flex-direction: column; gap: 2px; font-size: 11px;">
-      <div style="color: #f97316; display: flex; justify-content: space-between;"><span>${fanText('🟠 GPU 结温:', '🟠 GPU junction:')}</span> <strong>${p.gpuJ !== null ? `${p.gpuJ} °C` : 'N/A'}</strong></div>
-      <div style="color: #ef4444; display: flex; justify-content: space-between;"><span>${fanText('🔴 CPU 封装:', '🔴 CPU package:')}</span> <strong>${p.cpu !== null ? `${p.cpu} °C` : 'N/A'}</strong></div>
-      <div style="color: #eab308; display: flex; justify-content: space-between;"><span>${fanText('🟡 GPU 核心:', '🟡 GPU edge:')}</span> <strong>${p.gpuE !== null ? `${p.gpuE} °C` : 'N/A'}</strong></div>
-      <div style="color: #3b82f6; display: flex; justify-content: space-between;"><span>${fanText('⚡ GPU 功耗:', '⚡ GPU power:')}</span> <strong>${p.gpuP !== null ? `${p.gpuP} W` : 'N/A'}</strong></div>
+      <div style="color: #f97316; display: flex; justify-content: space-between;"><span>${fanText('🟠 GPU 结温:', '🟠 GPU junction:')}</span> <strong>${formatFanReading(p.gpuJ, '°C')}</strong></div>
+      <div style="color: #ef4444; display: flex; justify-content: space-between;"><span>${fanText('🔴 CPU 封装:', '🔴 CPU package:')}</span> <strong>${formatFanReading(p.cpu, '°C')}</strong></div>
+      <div style="color: #eab308; display: flex; justify-content: space-between;"><span>${fanText('🟡 GPU 核心:', '🟡 GPU edge:')}</span> <strong>${formatFanReading(p.gpuE, '°C')}</strong></div>
+      <div style="color: #3b82f6; display: flex; justify-content: space-between;"><span>${fanText('⚡ GPU 功耗:', '⚡ GPU power:')}</span> <strong>${formatFanReading(p.gpuP, 'W')}</strong></div>
     </div>
   `;
 
@@ -584,15 +657,25 @@ function handleChartMouseLeave() {
 window.loadFanLogs = async function () {
   const box = document.getElementById('fan-logs-content');
   if (!box) return;
+  const requestSequence = ++fanLogsRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
+  fanLogsAbortController?.abort();
+  const requestController = new AbortController();
+  fanLogsAbortController = requestController;
   box.innerText = '正在拉取温控服务日志...';
   window.showModal('modal-fan-logs');
 
   try {
-    const res = await window.api.request('/api/fan/logs');
+    const res = await window.api.request('/api/fan/logs', { signal: requestController.signal });
+    if (requestSequence !== fanLogsRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     box.innerText = res.logs || '暂无日志';
     box.scrollTop = box.scrollHeight;
   } catch (err) {
+    if (err.name === 'AbortError' || requestSequence !== fanLogsRequestSequence) return;
     box.innerText = `加载日志失败: ${err.message}`;
+  } finally {
+    if (fanLogsAbortController === requestController) fanLogsAbortController = null;
   }
 };
 
@@ -616,8 +699,9 @@ function setTempColor(id, temp) {
 
 function getTempColorCode(temp) {
   if (temp === null || temp === undefined) return 'inherit';
-  if (temp >= 80) return 'var(--perf-red)';
-  if (temp >= 65) return 'var(--perf-yellow)';
+  const alarmThreshold = window.getTemperatureAlarmThreshold?.() || 80;
+  if (temp >= alarmThreshold) return 'var(--perf-red)';
+  if (temp >= alarmThreshold - 15) return 'var(--perf-yellow)';
   return 'var(--perf-green)';
 }
 

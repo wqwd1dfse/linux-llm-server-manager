@@ -2,9 +2,149 @@
 
 window.currentView = 'files';
 window.serverConnectionConfig = null;
+window.serverContextEpoch = 0;
+window.serverTargetEpoch = window.serverTargetEpoch || null;
 const initializedViews = new Set();
 const loadingViews = new Map();
 let serverProfiles = [];
+let serverProfilesRequestSequence = 0;
+let serverProfilesAbortController = null;
+const DEFAULT_HF_MODEL_DIR = '/mnt/models';
+const DEFAULT_TEMPERATURE_ALARM = 80;
+const ALLOWED_TEMPERATURE_ALARMS = Object.freeze([75, 80, 85, 90]);
+let serverTargetRefreshPromise = null;
+let serverTargetRefreshRequested = false;
+const SERVER_TARGET_CHANNEL_NAME = 'linux-manager-ssh-target-v1';
+const SERVER_TARGET_STORAGE_KEY = 'linux-manager-ssh-target-signal';
+const serverTargetChannel = typeof BroadcastChannel === 'function'
+  ? new BroadcastChannel(SERVER_TARGET_CHANNEL_NAME)
+  : null;
+
+function receiveServerTargetSignal(payload) {
+  const targetEpoch = payload?.targetEpoch;
+  if (typeof targetEpoch !== 'string' || !targetEpoch || targetEpoch === window.serverTargetEpoch) return;
+  window.dispatchEvent(new CustomEvent('sshtargetstale', { detail: payload }));
+}
+
+serverTargetChannel?.addEventListener('message', (event) => receiveServerTargetSignal(event.data));
+window.addEventListener('storage', (event) => {
+  if (event.key !== SERVER_TARGET_STORAGE_KEY || !event.newValue) return;
+  try { receiveServerTargetSignal(JSON.parse(event.newValue)); } catch (_) {}
+});
+
+function broadcastServerTargetEpoch(targetEpoch, reason) {
+  const payload = { targetEpoch, reason, sentAt: Date.now() };
+  try { serverTargetChannel?.postMessage(payload); } catch (_) {}
+  try { localStorage.setItem(SERVER_TARGET_STORAGE_KEY, JSON.stringify(payload)); } catch (_) {}
+}
+
+function normalizeAbsoluteModelDirectory(value) {
+  const text = typeof value === 'string' ? value.trim().replace(/\\/g, '/') : '';
+  if (!text.startsWith('/') || text.includes('\0')) return null;
+  const normalized = window.path?.normalize(text) || text;
+  return normalized.startsWith('/') ? normalized.replace(/\/+$/, '') || '/' : null;
+}
+
+window.getAllowedHfModelRoots = function getAllowedHfModelRoots() {
+  const roots = Array.isArray(window.serverConnectionConfig?.modelRoots)
+    ? window.serverConnectionConfig.modelRoots
+    : [];
+  const normalized = roots.map(normalizeAbsoluteModelDirectory).filter(Boolean);
+  return [...new Set(normalized.length ? normalized : [DEFAULT_HF_MODEL_DIR])];
+};
+
+window.getDefaultHfModelDir = function getDefaultHfModelDir() {
+  return window.getAllowedHfModelRoots()[0];
+};
+
+window.resolveHfModelDir = function resolveHfModelDir(value) {
+  const candidate = normalizeAbsoluteModelDirectory(value);
+  if (!candidate) return null;
+  const allowed = window.getAllowedHfModelRoots().some((root) => (
+    root === '/' || candidate === root || candidate.startsWith(`${root}/`)
+  ));
+  return allowed ? candidate : null;
+};
+
+window.getHfModelDir = function getHfModelDir() {
+  const configured = localStorage.getItem('hf_model_dir')?.trim();
+  return window.resolveHfModelDir(configured) || window.getDefaultHfModelDir();
+};
+
+window.getTemperatureAlarmThreshold = function getTemperatureAlarmThreshold() {
+  const configured = Number.parseInt(localStorage.getItem('win-temp-alarm') || '', 10);
+  return ALLOWED_TEMPERATURE_ALARMS.includes(configured)
+    ? configured
+    : DEFAULT_TEMPERATURE_ALARM;
+};
+
+window.getServerContextEpoch = function getServerContextEpoch() {
+  return window.serverContextEpoch;
+};
+
+async function synchronizeServerTargetContext(reason = 'target-epoch') {
+  serverTargetRefreshRequested = true;
+  if (serverTargetRefreshPromise) return serverTargetRefreshPromise;
+
+  serverTargetRefreshPromise = (async () => {
+    do {
+      serverTargetRefreshRequested = false;
+      const response = await fetch('/api/auth/status', {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store'
+      });
+      const data = await response.json();
+      if (!response.ok || !data.authenticated) {
+        if (response.status === 401 || !data.authenticated) window.showLoginModal?.('登录已过期，请重新登录');
+        return null;
+      }
+      await applyServerStatusPayload(data, { forceContextChange: true, reason });
+    } while (serverTargetRefreshRequested);
+    return window.serverConnectionConfig;
+  })().catch((error) => {
+    if (error.name !== 'AbortError') window.toast?.(`同步服务器状态失败: ${error.message}`, 'error');
+    return null;
+  }).finally(() => {
+    serverTargetRefreshPromise = null;
+  });
+
+  return serverTargetRefreshPromise;
+}
+
+window.synchronizeServerTargetContext = synchronizeServerTargetContext;
+window.addEventListener('sshtargetstale', () => {
+  synchronizeServerTargetContext('stale-target');
+});
+
+function getServerContextKey(config) {
+  if (!config) return '';
+  return config.activeProfileId
+    || `${config.username || ''}@${config.host || ''}:${config.port || 22}`;
+}
+
+function commitServerContext(config, { force = false, reason = 'status' } = {}) {
+  const previousConfig = window.serverConnectionConfig;
+  const changed = force || getServerContextKey(previousConfig) !== getServerContextKey(config);
+  window.serverConnectionConfig = config || null;
+  if (!changed) return false;
+
+  serverProfilesRequestSequence += 1;
+  serverProfilesAbortController?.abort();
+  serverProfilesAbortController = null;
+  const previousEpoch = window.serverContextEpoch;
+  window.serverContextEpoch += 1;
+  window.dispatchEvent(new CustomEvent('servercontextchange', {
+    detail: {
+      epoch: window.serverContextEpoch,
+      previousEpoch,
+      previousConfig,
+      config: window.serverConnectionConfig,
+      reason
+    }
+  }));
+  return true;
+}
 
 window.getPollingInterval = function getPollingInterval() {
   const saved = Number.parseInt(localStorage.getItem('win-poll-interval') || '2500', 10);
@@ -214,7 +354,12 @@ function switchView(view) {
   if (navHistoryGroup) navHistoryGroup.style.display = isFiles ? 'flex' : 'none';
 
   // Lazy initialize this view
-  lazyInitView(view);
+  const viewInitialization = lazyInitView(view);
+  if (view === 'settings') {
+    viewInitialization.then(() => window.syncHfSettingsControls?.());
+  } else if (view === 'llm') {
+    viewInitialization.then(() => window.syncHfExplorerPreferences?.());
+  }
 
   if (isFiles && window.navigateToDir && typeof window.currentPath !== 'undefined') {
     renderAddressBarFiles(window.currentPath);
@@ -300,7 +445,15 @@ function updateAddressBarForView(view) {
   const title = viewTitles[view] || view;
   const target = getServerTargetLabel(false);
   const serverText = isEn ? `This Server · ${target}` : `此服务器 · ${target}`;
-  box.innerHTML = `<span>🖥️ ${serverText}</span> <span>&gt;</span> <span class="address-crumb-item">${window.escapeHtml(title)}</span>`;
+  const serverCrumb = document.createElement('span');
+  serverCrumb.textContent = `🖥️ ${serverText}`;
+  const separator = document.createElement('span');
+  separator.textContent = '>';
+  const viewCrumb = document.createElement('span');
+  viewCrumb.id = 'address-bar-crumb';
+  viewCrumb.className = 'address-crumb-item';
+  viewCrumb.textContent = title;
+  box.replaceChildren(serverCrumb, separator, viewCrumb);
 }
 
 function setupCommandBar() {
@@ -309,6 +462,10 @@ function setupCommandBar() {
   document.getElementById('btn-quick-login')?.addEventListener('click', () => switchView('settings'));
 
   document.getElementById('cmd-btn-refresh')?.addEventListener('click', () => {
+    if (window.currentView === 'files' && typeof window.refreshCurrentFileList === 'function') {
+      window.refreshCurrentFileList();
+      return;
+    }
     window.location.reload();
   });
 }
@@ -357,8 +514,15 @@ function setupGlobalActions() {
     const handler = actionHandlers[actionElement.dataset.action];
     if (!handler) return;
     event.preventDefault();
+    const contextMenu = actionElement.closest('.win-context-menu');
+    if (contextMenu) {
+      if (typeof window.closeFileContextMenu === 'function') {
+        window.closeFileContextMenu();
+      } else {
+        contextMenu.classList.remove('show');
+      }
+    }
     handler(actionElement);
-    actionElement.closest('.win-context-menu')?.classList.remove('show');
   });
 
   document.getElementById('select-all-checkbox')?.addEventListener('change', (event) => {
@@ -528,19 +692,23 @@ function renderServerProfiles(activeProfileId = null) {
 }
 
 async function loadServerProfiles(activeProfileId = window.serverConnectionConfig?.activeProfileId || null) {
+  const requestSequence = ++serverProfilesRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
+  serverProfilesAbortController?.abort();
+  const requestController = new AbortController();
+  serverProfilesAbortController = requestController;
   try {
-    const res = await window.api.request('/api/auth/profiles');
+    const res = await window.api.request('/api/auth/profiles', { signal: requestController.signal });
+    if (requestSequence !== serverProfilesRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     serverProfiles = res.profiles || [];
     renderServerProfiles(res.activeProfileId || activeProfileId);
-  } catch (_) {}
-}
-
-async function refreshViewsAfterServerSwitch() {
-  if (window.refreshFileServerContext) window.refreshFileServerContext();
-  if (window.loadFanStatus) window.loadFanStatus();
-  if (window.loadLLMStatus) window.loadLLMStatus();
-  if (window.loadDockerContainers) window.loadDockerContainers();
-  if (window.loadProcesses) window.loadProcesses();
+  } catch (error) {
+    if (error.name === 'AbortError' || requestSequence !== serverProfilesRequestSequence) return;
+    // The shared API helper already surfaced the failure; keep the last stable list.
+  } finally {
+    if (serverProfilesAbortController === requestController) serverProfilesAbortController = null;
+  }
 }
 
 async function connectServerProfile(profileId) {
@@ -553,9 +721,8 @@ async function connectServerProfile(profileId) {
   if (selector) selector.disabled = true;
   try {
     const res = await window.api.request(`/api/auth/profiles/${encodeURIComponent(profileId)}/connect`, { method: 'POST' });
-    window.toast(res.message, 'success');
-    await checkAuthStatus();
-    await refreshViewsAfterServerSwitch();
+    window.toast(res.warning || res.message, res.warning ? 'warning' : 'success');
+    await applyServerStatusPayload(res, { forceContextChange: true, reason: 'profile-switch' });
   } catch (_) {
     if (selector) selector.value = window.serverConnectionConfig?.activeProfileId || '';
   } finally {
@@ -643,19 +810,14 @@ function setupSettingsForm() {
     }
 
     try {
-      await window.api.request('/api/auth/connect', {
+      const connectResult = await window.api.request('/api/auth/connect', {
         method: 'POST',
         body: JSON.stringify({ host, port, username, authType, password, privateKey, passphrase, remember, profileId, profileName })
       });
 
-      window.toast(remember ? '已连接目标主机并保存服务器档案' : '已连接目标主机，凭据仅用于本次运行', 'success');
-      await checkAuthStatus();
-      await loadServerProfiles();
-      if (window.navigateToDir) window.navigateToDir(window.currentPath || '/root');
-      if (window.loadFanStatus) window.loadFanStatus();
-      if (window.loadLLMStatus) window.loadLLMStatus();
-      if (window.loadDockerContainers) window.loadDockerContainers();
-      if (window.loadProcesses) window.loadProcesses();
+      const fallbackMessage = remember ? '已连接目标主机并保存服务器档案' : '已连接目标主机，凭据仅用于本次运行';
+      window.toast(connectResult.warning || connectResult.message || fallbackMessage, connectResult.warning ? 'warning' : 'success');
+      await applyServerStatusPayload(connectResult, { forceContextChange: true, reason: 'ssh-connect' });
       switchView(window.currentView || 'monitor-cpu');
     } catch (_) {
     } finally {
@@ -792,23 +954,28 @@ async function checkAuthAndInitialize() {
       return;
     }
 
-    // Authenticated: initialize default view
-    await checkAuthStatus();
+    // Authenticated: this public status response also bootstraps the opaque SSH
+    // target epoch required by every target-sensitive request.
+    await applyServerStatusPayload(data, { forceContextChange: true, reason: 'initial-status' });
     lazyInitView(window.currentView || 'files');
   } catch (err) {
     window.showLoginModal();
   }
 }
 
-async function checkAuthStatus() {
-  try {
-    const res = await window.api.request('/api/auth/status');
-    const { connected, config } = res;
+async function applyServerStatusPayload(res, { forceContextChange = false, reason = 'status' } = {}) {
+    const config = res?.config || null;
+    const connected = Boolean(res?.connected ?? res?.status?.connected);
+    const targetEpoch = res?.targetEpoch || res?.status?.targetEpoch || null;
+    const targetEpochChanged = Boolean(targetEpoch && targetEpoch !== window.serverTargetEpoch);
+
+    if (targetEpoch) window.serverTargetEpoch = targetEpoch;
+    if (targetEpochChanged) broadcastServerTargetEpoch(targetEpoch, reason);
 
     window.updateConnectionStatus(connected);
+    commitServerContext(config || null, { force: forceContextChange || targetEpochChanged, reason });
 
     if (config) {
-      window.serverConnectionConfig = config;
       document.title = `${config.host} · ${window.localize ? window.localize('Linux 服务器管理控制台', 'Linux Server Manager') : 'Linux Server Manager'}`;
       const hostEl = document.getElementById('titlebar-host');
       if (hostEl) hostEl.innerText = getServerTargetLabel(true);
@@ -843,8 +1010,16 @@ async function checkAuthStatus() {
       }
       await loadServerProfiles(config.activeProfileId);
     }
+    return res;
+}
+
+async function checkAuthStatus({ forceContextChange = false, reason = 'status' } = {}) {
+  try {
+    const res = await window.api.request('/api/auth/status');
+    return await applyServerStatusPayload(res, { forceContextChange, reason });
   } catch (e) {
     window.updateConnectionStatus(false);
+    return null;
   }
 }
 

@@ -11,7 +11,10 @@ import {
   validateSignal,
   validatePort,
   validateSafePath,
-  validatePathWithinRoots
+  validatePathWithinRoots,
+  PROTECTED_TOP_LEVEL_SYSTEM_PATHS,
+  assertNotProtectedTopLevelSystemPath,
+  isProtectedTopLevelSystemPath
 } from '../server/executor.js';
 
 test('Executor: POSIX argument quoting', () => {
@@ -84,6 +87,32 @@ test('Executor: Safe path traversal validation', () => {
 
   assert.throws(() => validateSafePath('relative/path'), /必须为绝对路径/);
   assert.throws(() => validateSafePath('/tmp/evil\0file'), /包含非法空字符/);
+});
+
+test('Executor: canonical paths cannot bypass protected-directory checks with trailing slashes', () => {
+  assert.equal(validateSafePath('/var/'), '/var');
+  assert.equal(validateSafePath('/usr//'), '/usr');
+  assert.equal(validateSafePath('/etc/.'), '/etc');
+  assert.equal(validateSafePath('/'), '/');
+});
+
+test('Executor: destructive guards cover all top-level system directories but allow descendants', () => {
+  assert.deepEqual(PROTECTED_TOP_LEVEL_SYSTEM_PATHS, [
+    '/', '/bin', '/boot', '/dev', '/etc', '/home', '/lib', '/lib64',
+    '/media', '/mnt', '/opt', '/proc', '/root', '/run', '/sbin', '/srv',
+    '/sys', '/tmp', '/usr', '/var'
+  ]);
+  for (const protectedPath of PROTECTED_TOP_LEVEL_SYSTEM_PATHS) {
+    assert.equal(isProtectedTopLevelSystemPath(`${protectedPath}${protectedPath === '/' ? '' : '/'}`), true);
+    assert.throws(
+      () => assertNotProtectedTopLevelSystemPath(protectedPath, '永久删除'),
+      /安全限制/
+    );
+  }
+  for (const allowedPath of ['/home/alice', '/root/model.gguf', '/var/tmp/cache', '/usr/local/app']) {
+    assert.equal(isProtectedTopLevelSystemPath(allowedPath), false);
+    assert.equal(assertNotProtectedTopLevelSystemPath(allowedPath, '永久删除'), allowedPath);
+  }
 });
 
 

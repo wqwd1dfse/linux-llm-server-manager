@@ -237,6 +237,7 @@ summary:focus-visible {
 
 .view-panel {
   gap: 14px;
+  min-width: 0;
 }
 
 .perf-header,
@@ -491,6 +492,61 @@ summary:focus-visible {
 
   .chat-input-row textarea {
     flex-basis: 100%;
+  }
+
+  .llm-nav-tabs-bar {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .llm-nav-tabs-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .llm-nav-tab {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .hf-toolbar-row,
+  .hf-modal-toolbar {
+    align-items: stretch !important;
+    flex-direction: column !important;
+  }
+
+  .hf-toolbar-search,
+  .hf-toolbar-options,
+  .hf-direct-row,
+  .hf-modal-tabs {
+    flex-wrap: wrap !important;
+    min-width: 0;
+    width: 100%;
+  }
+
+  #hf-search-query,
+  #hf-direct-repo-input {
+    flex: 1 1 100% !important;
+    min-width: 0 !important;
+  }
+
+  #hf-access-token,
+  #hf-modal-file-filter {
+    flex: 1 1 100%;
+    min-width: 0;
+    width: 100% !important;
+  }
+
+  #modal-hf-files .modal-header-bar > div {
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  #hf-modal-repo-name {
+    overflow-wrap: anywhere;
+  }
+
+  #hf-modal-files-pane {
+    overflow: auto !important;
   }
 
   #view-fan [style*="grid-template-columns"],

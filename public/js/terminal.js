@@ -5,6 +5,7 @@ const terminalText = (zh, en) => window.localize ? window.localize(zh, en) : en;
 let term = null;
 let fitAddon = null;
 let termWs = null;
+let terminalInitialized = false;
 
 const XTERM_CSS_URL = 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css';
 const XTERM_JS_URL = 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js';
@@ -133,6 +134,8 @@ window.initTerminal = async function () {
     });
   }
 
+  terminalInitialized = true;
+
   // Connect or reconnect WebSocket
   connectTerminalWs();
 
@@ -146,13 +149,34 @@ window.initTerminal = async function () {
   });
 };
 
-function connectTerminalWs(force = false) {
-  if (termWs && !force && termWs.readyState === WebSocket.OPEN) return;
-
-  if (termWs) {
-    try { termWs.close(); } catch (_) {}
-    termWs = null;
+window.addEventListener('servercontextchange', () => {
+  disconnectTerminalWs();
+  if (term) {
+    term.reset();
+    term.write(terminalText(
+      '\r\n\x1b[36m[服务器已切换，旧终端会话已断开]\x1b[0m\r\n',
+      '\r\n\x1b[36m[Server changed; the previous terminal session was closed]\x1b[0m\r\n'
+    ));
   }
+  if (terminalInitialized) queueMicrotask(() => connectTerminalWs(true));
+});
+
+function disconnectTerminalWs() {
+  const socket = termWs;
+  termWs = null;
+  if (!socket) return;
+  socket.onopen = null;
+  socket.onmessage = null;
+  socket.onclose = null;
+  socket.onerror = null;
+  try { socket.close(); } catch (_) {}
+}
+
+function connectTerminalWs(force = false) {
+  if (termWs && !force
+    && (termWs.readyState === WebSocket.OPEN || termWs.readyState === WebSocket.CONNECTING)) return;
+
+  if (termWs) disconnectTerminalWs();
 
   if (term) {
     const targetHost = window.serverConnectionConfig?.host || terminalText('目标服务器', 'target server');
@@ -160,21 +184,28 @@ function connectTerminalWs(force = false) {
   }
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/ws/terminal`;
+  const wsPath = window.withSshTargetEpochUrl?.('/ws/terminal') || '/ws/terminal';
+  const wsUrl = `${protocol}//${window.location.host}${wsPath}`;
+  const connectionEpoch = window.getServerContextEpoch?.() ?? 0;
 
   try {
-    termWs = new WebSocket(wsUrl);
+    const socket = new WebSocket(wsUrl);
+    termWs = socket;
 
-    termWs.onopen = () => {
+    socket.onopen = () => {
+      if (socket !== termWs
+        || connectionEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
       if (term) {
         if (fitAddon) fitAddon.fit();
         const cols = term.cols || 80;
         const rows = term.rows || 24;
-        termWs.send(JSON.stringify({ type: 'init', cols, rows }));
+        socket.send(JSON.stringify({ type: 'init', cols, rows }));
       }
     };
 
-    termWs.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (socket !== termWs
+        || connectionEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'data' && term) {
@@ -189,13 +220,16 @@ function connectTerminalWs(force = false) {
       }
     };
 
-    termWs.onclose = () => {
+    socket.onclose = () => {
+      if (socket !== termWs) return;
+      termWs = null;
       if (term) {
         term.write(terminalText('\r\n\x1b[33m[终端连接已关闭，可点击上方「重新连接」]\x1b[0m\r\n', '\r\n\x1b[33m[Terminal connection closed; use Reconnect above]\x1b[0m\r\n'));
       }
     };
 
-    termWs.onerror = (err) => {
+    socket.onerror = () => {
+      if (socket !== termWs) return;
       if (term) {
         term.write(terminalText('\r\n\x1b[31m[WebSocket 终端连接异常]\x1b[0m\r\n', '\r\n\x1b[31m[WebSocket terminal connection error]\x1b[0m\r\n'));
       }

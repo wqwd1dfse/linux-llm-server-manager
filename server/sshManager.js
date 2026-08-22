@@ -1,4 +1,5 @@
 import { Client } from 'ssh2';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -6,14 +7,47 @@ import { fileURLToPath } from 'url';
 import { getConfig, setRuntimeSshOverride } from './config.js';
 import { buildSafeCommand } from './executor.js';
 import { writeJsonAtomic } from './atomicFile.js';
+import { ConcurrencyLimiter } from './concurrencyLimiter.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DEFAULT_KNOWN_HOSTS_FILE = path.join(__dirname, '..', 'data', 'known_hosts.json');
 
+function boundedEnvironmentInteger(value, fallback, min, max) {
+  const text = String(value ?? '').trim();
+  if (!/^\d+$/.test(text)) return fallback;
+  const parsed = Number(text);
+  return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+}
+
+const commandLimiter = new ConcurrencyLimiter(
+  boundedEnvironmentInteger(process.env.MAX_CONCURRENT_SSH_COMMANDS, 12, 1, 64),
+  boundedEnvironmentInteger(process.env.MAX_QUEUED_SSH_COMMANDS, 64, 0, 1000),
+  boundedEnvironmentInteger(process.env.SSH_COMMAND_QUEUE_TIMEOUT_MS, 10_000, 100, 60_000)
+);
+
+export class SshConnectionCoordinator {
+  constructor({ maxQueue = 8, queueTimeoutMs = 30_000 } = {}) {
+    this.limiter = new ConcurrencyLimiter(1, maxQueue, queueTimeoutMs);
+  }
+
+  run(operation, options = {}) {
+    return this.limiter.run(operation, options);
+  }
+}
+
+const connectionCoordinator = new SshConnectionCoordinator({
+  maxQueue: boundedEnvironmentInteger(process.env.MAX_QUEUED_SSH_CONNECTIONS, 8, 0, 64),
+  queueTimeoutMs: boundedEnvironmentInteger(process.env.SSH_CONNECTION_QUEUE_TIMEOUT_MS, 30_000, 1_000, 120_000)
+});
+const sshTargetContextStorage = new AsyncLocalStorage();
+
 let activeClient = null;
 let connectingClient = null;
 let connectionAttemptId = 0;
+let connectionTargetGeneration = 0;
+const connectionTargetNonce = crypto.randomBytes(16).toString('base64url');
+const connectionTargetEpochListeners = new Set();
 let isConnecting = false;
 let connectPromise = null;
 let connectionStatus = {
@@ -23,6 +57,51 @@ let connectionStatus = {
   host: null,
   manuallyDisconnected: false
 };
+
+function targetIdentityFromConfig(config = getConfig()) {
+  const username = String(config.username || 'root');
+  const host = String(config.host || '127.0.0.1');
+  const port = Number(config.port || 22);
+  return `${username}@${host}:${port}`;
+}
+
+// Target identity is deliberately independent from transport liveness. A
+// reconnect to the same host must not invalidate the request that initiated
+// it, while a real profile/host switch still invalidates queued old-target work.
+let connectionTargetId = targetIdentityFromConfig();
+
+function formatConnectionTargetEpoch(generation = connectionTargetGeneration) {
+  return `${connectionTargetNonce}.${generation}`;
+}
+
+function notifyConnectionTargetEpochChanged(reason) {
+  const event = Object.freeze({
+    targetEpoch: formatConnectionTargetEpoch(),
+    generation: connectionTargetGeneration,
+    targetId: connectionTargetId,
+    reason
+  });
+  // Notify after the current state transition finishes. This prevents a
+  // listener from observing the new epoch alongside the previous status.
+  queueMicrotask(() => {
+    for (const listener of connectionTargetEpochListeners) {
+      try { listener(event); } catch (_) {}
+    }
+  });
+}
+
+function advanceConnectionTargetEpoch(reason) {
+  connectionTargetGeneration += 1;
+  notifyConnectionTargetEpochChanged(reason);
+}
+
+function synchronizeConfiguredTargetIdentity() {
+  if (connectionStatus.connected || isConnecting) return;
+  const configuredTargetId = targetIdentityFromConfig();
+  if (configuredTargetId === connectionTargetId) return;
+  connectionTargetId = configuredTargetId;
+  advanceConnectionTargetEpoch('configured-target-changed');
+}
 
 export function getKnownHostsFilePath() {
   return process.env.SSH_KNOWN_HOSTS_FILE || DEFAULT_KNOWN_HOSTS_FILE;
@@ -136,10 +215,70 @@ function buildSshConfig(customConfig = null) {
 }
 
 export function getConnectionStatus() {
-  return { ...connectionStatus };
+  synchronizeConfiguredTargetIdentity();
+  return { ...connectionStatus, targetEpoch: formatConnectionTargetEpoch() };
+}
+
+export function runSshConnectionTransition(operation, options = {}) {
+  return connectionCoordinator.run(operation, options);
+}
+
+export function getSshTargetEpoch() {
+  synchronizeConfiguredTargetIdentity();
+  return formatConnectionTargetEpoch();
+}
+
+export function assertSshTargetEpoch(expectedEpoch) {
+  const currentEpoch = getSshTargetEpoch();
+  if (typeof expectedEpoch !== 'string' || !expectedEpoch) {
+    const error = new Error('SSH target epoch is required');
+    error.code = 'SSH_TARGET_EPOCH_REQUIRED';
+    error.targetEpoch = currentEpoch;
+    throw error;
+  }
+  if (expectedEpoch !== currentEpoch) {
+    const error = new Error('The browser view belongs to an outdated SSH target');
+    error.code = 'SSH_TARGET_STALE';
+    error.targetEpoch = currentEpoch;
+    throw error;
+  }
+  return true;
+}
+
+export function onSshTargetEpochChanged(listener) {
+  if (typeof listener !== 'function') throw new TypeError('SSH target epoch listener must be a function');
+  connectionTargetEpochListeners.add(listener);
+  return () => connectionTargetEpochListeners.delete(listener);
+}
+
+export function captureSshTargetContext() {
+  synchronizeConfiguredTargetIdentity();
+  return Object.freeze({
+    generation: connectionTargetGeneration,
+    targetId: connectionTargetId,
+    targetEpoch: formatConnectionTargetEpoch()
+  });
+}
+
+export function runWithSshTargetContext(context, operation) {
+  if (typeof operation !== 'function') throw new TypeError('SSH target context operation must be a function');
+  return sshTargetContextStorage.run(context || captureSshTargetContext(), operation);
+}
+
+export function assertSshTargetContext(context = sshTargetContextStorage.getStore()) {
+  if (!context) return true;
+  const targetChanged = context.generation !== connectionTargetGeneration
+    || (context.targetId && connectionTargetId && context.targetId !== connectionTargetId);
+  if (targetChanged) {
+    const error = new Error('Target server changed while the remote operation was pending');
+    error.code = 'SSH_TARGET_CHANGED';
+    throw error;
+  }
+  return true;
 }
 
 export function disconnect() {
+  advanceConnectionTargetEpoch('disconnect');
   connectionAttemptId += 1;
   if (connectingClient) {
     try { connectingClient.end(); } catch (_) {}
@@ -213,38 +352,36 @@ export async function getClient(forceReconnect = false, customConfig = null) {
     return activeClient;
   }
 
-  if (isConnecting && connectPromise) {
+  // Forced transitions wait for the candidate already in flight instead of
+  // superseding it. Route-level transitions also use a bounded coordinator,
+  // while this loop protects direct callers of getClient().
+  while (isConnecting && connectPromise) {
     if (!forceReconnect) return connectPromise;
-    connectionAttemptId += 1;
-    try { connectingClient?.end(); } catch (_) {}
-    connectingClient = null;
-    isConnecting = false;
-    connectPromise = null;
+    try {
+      await connectPromise;
+    } catch (_) {
+      // A failed candidate leaves the previous active connection untouched.
+    }
   }
 
-  if (customConfig) setRuntimeSshOverride(customConfig);
+  if (activeClient && !forceReconnect && connectionStatus.connected) {
+    return activeClient;
+  }
 
   let sshConfig;
   let appConfig;
   try {
     ({ sshConfig, appConfig } = buildSshConfig(customConfig));
   } catch (error) {
-    connectionStatus.connected = false;
-    connectionStatus.error = error.message;
     throw error;
-  }
-
-  if (activeClient) {
-    const previousClient = activeClient;
-    activeClient = null;
-    try { previousClient.end(); } catch (_) {}
   }
 
   const attemptId = ++connectionAttemptId;
   const client = new Client();
+  const previousClient = activeClient;
+  const statusBeforeAttempt = { ...connectionStatus };
   connectingClient = client;
   isConnecting = true;
-  connectionStatus.manuallyDisconnected = false;
   let ready = false;
   let settled = false;
 
@@ -261,19 +398,19 @@ export async function getClient(forceReconnect = false, customConfig = null) {
       settled = true;
       if (attemptId === connectionAttemptId) {
         clearPendingAttempt();
-        connectionStatus = {
-          connected: false,
-          lastConnected: connectionStatus.lastConnected,
-          error: error.message,
-          host: `${appConfig.username}@${appConfig.host}:${appConfig.port}`,
-          manuallyDisconnected: connectionStatus.manuallyDisconnected
-        };
+        if (!activeClient) {
+          connectionStatus = {
+            ...statusBeforeAttempt,
+            connected: false,
+            error: error.message
+          };
+        }
       }
       reject(error);
     };
 
     client.on('ready', () => {
-      if (attemptId !== connectionAttemptId || connectionStatus.manuallyDisconnected) {
+      if (attemptId !== connectionAttemptId) {
         try { client.end(); } catch (_) {}
         rejectPendingAttempt(new Error('SSH connection attempt was superseded'));
         return;
@@ -282,13 +419,39 @@ export async function getClient(forceReconnect = false, customConfig = null) {
       settled = true;
       activeClient = client;
       clearPendingAttempt();
+      const nextTargetId = `${appConfig.username}@${appConfig.host}:${appConfig.port}`;
+      if (nextTargetId !== connectionTargetId) {
+        connectionTargetId = nextTargetId;
+        advanceConnectionTargetEpoch('target-connected');
+      }
       connectionStatus = {
         connected: true,
         lastConnected: new Date().toISOString(),
         error: null,
-        host: `${appConfig.username}@${appConfig.host}:${appConfig.port}`,
+        host: nextTargetId,
         manuallyDisconnected: false
       };
+
+      // A custom target becomes the runtime target only after the SSH
+      // handshake succeeds. Failed candidates therefore cannot poison config.
+      if (customConfig) {
+        setRuntimeSshOverride({
+          host: appConfig.host,
+          port: appConfig.port,
+          username: appConfig.username,
+          authType: appConfig.authType,
+          password: appConfig.password || '',
+          privateKey: appConfig.privateKey || '',
+          passphrase: appConfig.passphrase || '',
+          activeProfileId: Object.prototype.hasOwnProperty.call(customConfig, 'activeProfileId')
+            ? customConfig.activeProfileId
+            : null
+        });
+      }
+
+      if (previousClient && previousClient !== client) {
+        try { previousClient.end(); } catch (_) {}
+      }
       resolve(client);
     });
 
@@ -364,12 +527,36 @@ export async function executeRawScript(scriptContent, options = {}) {
  * Internal low-level SSH stream execution with timeouts, truncation, and abort signals
  */
 async function internalExec(commandString, options = {}) {
+  const expectedTargetContext = options.expectedTargetContext || sshTargetContextStorage.getStore() || null;
+  try {
+    return await commandLimiter.run(
+      () => executeInternalCommand(commandString, { ...options, expectedTargetContext }),
+      { signal: options.signal }
+    );
+  } catch (error) {
+    if (error?.code === 'ABORT_ERR') {
+      return {
+        success: false,
+        code: -1,
+        signal: 'SIGABRT',
+        stdout: '',
+        stderr: 'Command aborted while waiting to run',
+        aborted: true
+      };
+    }
+    throw error;
+  }
+}
+
+async function executeInternalCommand(commandString, options = {}) {
   const abortSignal = options.signal;
   if (abortSignal?.aborted) {
     return { success: false, code: -1, signal: 'SIGABRT', stdout: '', stderr: 'Command aborted', aborted: true };
   }
 
+  assertSshTargetContext(options.expectedTargetContext);
   const client = await getClient();
+  assertSshTargetContext(options.expectedTargetContext);
   const timeoutMs = options.timeoutMs || options.timeout || 15000;
   const maxStdoutBytes = options.maxStdoutBytes || 2 * 1024 * 1024;
   const maxStderrBytes = options.maxStderrBytes || 512 * 1024;
@@ -481,7 +668,10 @@ async function internalExec(commandString, options = {}) {
       stream.stderr.on('data', (data) => appendBounded(data, true));
       stream.on('close', (code, signal) => finish({
         success: code === 0,
-        code: code !== null ? code : (signal ? -1 : 0),
+        // A transport close without a remote exit status is indeterminate, not
+        // a successful exit. Callers that launch background work must preserve
+        // their ownership state and recover it instead of cleaning blindly.
+        code: code !== null && code !== undefined ? code : -1,
         signal: signal || null,
         stdout: stdout.trim(),
         stderr: stderr.trim(),
@@ -505,7 +695,10 @@ async function internalExec(commandString, options = {}) {
  * Open a TCP connection from the remote SSH host.
  */
 export async function createForwardedConnection(remoteHost, remotePort) {
+  const expectedTargetContext = sshTargetContextStorage.getStore() || null;
+  assertSshTargetContext(expectedTargetContext);
   const client = await getClient();
+  assertSshTargetContext(expectedTargetContext);
   const host = String(remoteHost || '127.0.0.1');
   const port = Number.parseInt(remotePort, 10);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -515,23 +708,44 @@ export async function createForwardedConnection(remoteHost, remotePort) {
   return new Promise((resolve, reject) => {
     client.forwardOut('127.0.0.1', 0, host, port, (err, stream) => {
       if (err) return reject(err);
+      try {
+        assertSshTargetContext(expectedTargetContext);
+      } catch (error) {
+        try { stream.end(); } catch (_) {}
+        try { stream.destroy(); } catch (_) {}
+        reject(error);
+        return;
+      }
       resolve(stream);
     });
   });
 }
 
 export async function getSftp() {
+  const expectedTargetContext = sshTargetContextStorage.getStore() || null;
+  assertSshTargetContext(expectedTargetContext);
   const client = await getClient();
+  assertSshTargetContext(expectedTargetContext);
   return new Promise((resolve, reject) => {
     client.sftp((err, sftp) => {
       if (err) return reject(err);
+      try {
+        assertSshTargetContext(expectedTargetContext);
+      } catch (error) {
+        try { sftp.end(); } catch (_) {}
+        reject(error);
+        return;
+      }
       resolve(sftp);
     });
   });
 }
 
 export async function createShell(options = {}) {
+  const expectedTargetContext = options.expectedTargetContext || sshTargetContextStorage.getStore() || null;
+  assertSshTargetContext(expectedTargetContext);
   const client = await getClient();
+  assertSshTargetContext(expectedTargetContext);
   return new Promise((resolve, reject) => {
     client.shell({
       term: options.term || 'xterm-256color',
@@ -539,6 +753,14 @@ export async function createShell(options = {}) {
       rows: options.rows || 24
     }, (err, stream) => {
       if (err) return reject(err);
+      try {
+        assertSshTargetContext(expectedTargetContext);
+      } catch (error) {
+        try { stream.end(); } catch (_) {}
+        try { stream.destroy(); } catch (_) {}
+        reject(error);
+        return;
+      }
       resolve(stream);
     });
   });

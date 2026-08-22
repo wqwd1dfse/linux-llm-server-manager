@@ -47,13 +47,15 @@
   - 默认安全本地监听 `127.0.0.1:3888`。
   - PBKDF2-HMAC-SHA512（220,000 次迭代）加盐哈希密码认证，首次密码至少 12 位，持久化原子存储于 `data/auth.json` (0600 权限)。
   - 用户名 + 密码双重严格校验，防暴力破解频率限制（5 次失败锁定 5 分钟）。
-  - HMAC-SHA256 签名会话 Cookie (`HttpOnly`, `SameSite=Lax`)。
+  - HMAC-SHA256 签名会话 Cookie (`HttpOnly`, `SameSite=Strict`)。
   - SSH 主机密钥首次信任（TOFU）指纹校验，后续指纹变化默认拒绝连接，抵御中间人攻击。
   - 全后端统一数组参数化执行器 (`executeCommand(executable, argv[])`)，彻底杜绝命令注入。
   - 静态前端全面 DOM API 重构，移除动态内联事件并使用 `script-src-attr 'none'` CSP，显著收紧 XSS 攻击面。
   - SSH 凭据默认仅保存在当前进程内；只有用户显式勾选时才写入本机 `data/config.json` (0600 权限)。
   - `TRUST_PROXY` 显式配置（默认 `false`），防止反向代理 IP 伪造。
   - 配置、认证和服务器档案采用原子写入，避免异常退出产生半写文件。
+  - HTTP 与 WebSocket 请求绑定带进程随机数的 SSH 目标 epoch，并跨标签页同步，防止旧标签误操作刚切换的新服务器。
+  - LLM 与下载进程使用私有运行目录、所有权令牌、PID 启动时间和持久状态恢复；SSH 响应不确定时不会宽泛终止无关进程或遗留静默孤儿任务。
 
 ---
 
@@ -61,7 +63,7 @@
 
 ### 1. 环境要求
 
-- Node.js >= 18.0.0（推荐 Node.js 20 LTS 或 22）
+- Node.js >= 18.0.0（推荐 Node.js 20、22 或 24）
 - npm >= 9.0.0
 - 一台可通过 SSH 访问的 Linux 服务器
 
@@ -90,10 +92,11 @@ HOST=127.0.0.1
 
 # Web 管理后台初始管理员凭据 (首次访问也可在 Web 界面进行初始化设置)
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=your_secure_password_here
+ADMIN_PASSWORD=
 
-# 生产环境请使用稳定、随机且足够长的值
-SESSION_SECRET=change_this_to_a_random_long_string_in_production
+# 留空则从本机完成首次初始化；也可在启动前设置唯一且不少于 12 位的密码
+# 需要跨进程重启保持会话时，请设置稳定、随机且不少于 32 个 UTF-8 字节的值
+SESSION_SECRET=
 
 # 反向代理信任设置 (默认 false，若位于 Nginx/Caddy 后可设为 loopback 或 1)
 TRUST_PROXY=false
@@ -124,7 +127,27 @@ MAX_UPLOAD_FILE_MB=512
 MAX_UPLOAD_FILES=10
 MAX_ARCHIVE_ENTRIES=10000
 MAX_ARCHIVE_EXPANDED_MB=102400
+
+# 背压、队列与 WebSocket 连接上限
+PORT_FALLBACK_LIMIT=10
+SHUTDOWN_GRACE_MS=10000
+MAX_CONCURRENT_LOGIN_HASHES=4
+MAX_QUEUED_LOGIN_HASHES=32
+LOGIN_HASH_QUEUE_TIMEOUT_MS=2000
+MAX_QUEUED_SSH_CONNECTIONS=8
+SSH_CONNECTION_QUEUE_TIMEOUT_MS=30000
+MAX_CONCURRENT_SSH_COMMANDS=12
+MAX_QUEUED_SSH_COMMANDS=64
+SSH_COMMAND_QUEUE_TIMEOUT_MS=10000
+MAX_CONCURRENT_SFTP_CHANNELS=8
+MAX_QUEUED_SFTP_OPERATIONS=32
+SFTP_QUEUE_TIMEOUT_MS=10000
+MAX_ACTIVE_MODEL_DOWNLOADS=4
+MAX_TERMINAL_WEBSOCKETS=32
+MAX_METRICS_WEBSOCKETS=64
 ```
+
+显式设置的 `SESSION_SECRET` 必须至少包含 32 字节，且不能继续使用公开示例占位值。SSH 目标切换会串行执行，并使用独立的有界等待队列。登录 PBKDF2、SSH 命令、SFTP 与模型下载分别使用有界队列；登录哈希设置允许 1-32 个活动任务、0-256 个排队任务和 100-30000 毫秒队列超时，越界值会回退为上面的安全默认值。只有确认 Node 工作线程池与远端 SSH、磁盘、网络容量后才应上调对应并发。
 
 ### 4. 启动服务
 
@@ -159,7 +182,7 @@ Dashboard 无需额外守护进程即可读取硬件传感器；自动温控曲�
     cd linux-llm-server-manager/linux/fan-control
     sudo ./install.sh
 
-无人值守运行前请检查 /etc/default/fan-control。不同主板与 GPU 的 hwmon PWM 节点可能不同，详细配置和回滚方法见 linux/fan-control/README.md。
+无人值守运行前请检查 /etc/default/fan-control。不同主板与 GPU 的 hwmon PWM 节点可能不同；温度阈值必须递增、PWM 曲线不得递减，且最高温档 GPU/机箱风扇必须保持 100%。详细配置和回滚方法见 linux/fan-control/README.md。
 ## 🧩 前端结构
 
 - `public/index.html`：应用外壳与主要业务视图。

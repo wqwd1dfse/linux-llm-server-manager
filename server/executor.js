@@ -101,11 +101,36 @@ export function validateSafePath(inputPath, allowRoot = false) {
   }
 
   // Normalize path using forward slashes
-  const normalized = path.posix.normalize(inputPath.replace(/\\/g, '/').trim());
+  let normalized = path.posix.normalize(inputPath.replace(/\\/g, '/').trim());
   if (!normalized.startsWith('/')) {
     throw new Error('路径必须为绝对路径 (以 / 开头)');
   }
 
+  // path.posix.normalize intentionally preserves one trailing slash. Remote
+  // safety guards compare canonical absolute paths, so keep only the root
+  // slash and collapse every other trailing-slash spelling to one identity.
+  if (normalized.length > 1) normalized = normalized.replace(/\/+$/, '');
+
+  return normalized;
+}
+
+export const PROTECTED_TOP_LEVEL_SYSTEM_PATHS = Object.freeze([
+  '/', '/bin', '/boot', '/dev', '/etc', '/home', '/lib', '/lib64',
+  '/media', '/mnt', '/opt', '/proc', '/root', '/run', '/sbin', '/srv',
+  '/sys', '/tmp', '/usr', '/var'
+]);
+
+const protectedTopLevelSystemPathSet = new Set(PROTECTED_TOP_LEVEL_SYSTEM_PATHS);
+
+export function isProtectedTopLevelSystemPath(inputPath) {
+  return protectedTopLevelSystemPathSet.has(validateSafePath(inputPath, true));
+}
+
+export function assertNotProtectedTopLevelSystemPath(inputPath, action = '操作') {
+  const normalized = validateSafePath(inputPath, true);
+  if (protectedTopLevelSystemPathSet.has(normalized)) {
+    throw new Error(`安全限制：禁止对系统核心目录 ${normalized} 执行${action}`);
+  }
   return normalized;
 }
 

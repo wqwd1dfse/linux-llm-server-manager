@@ -2,20 +2,57 @@ import crypto from 'crypto';
 import {
   hashPassword,
   verifyPassword,
+  verifyPasswordAsync,
   loadAuthRecord,
   saveAuthRecord,
   isAuthInitialized,
-  HASH_ITERATIONS
+  HASH_ITERATIONS,
+  MIN_PASSWORD_LENGTH,
+  validateAdminPassword
 } from './authStore.js';
+import { ConcurrencyLimiter } from './concurrencyLimiter.js';
+
+function boundedEnvironmentInteger(value, fallback, min, max) {
+  const text = String(value ?? '').trim();
+  if (!/^\d+$/.test(text)) return fallback;
+  const parsed = Number(text);
+  return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+}
+
+export function createLoginHashLimiter(environment = process.env) {
+  return new ConcurrencyLimiter(
+    boundedEnvironmentInteger(environment.MAX_CONCURRENT_LOGIN_HASHES, 4, 1, 32),
+    boundedEnvironmentInteger(environment.MAX_QUEUED_LOGIN_HASHES, 32, 0, 256),
+    boundedEnvironmentInteger(environment.LOGIN_HASH_QUEUE_TIMEOUT_MS, 2_000, 100, 30_000)
+  );
+}
+
+// PBKDF2 runs in libuv's worker pool. A process-wide limiter prevents callers
+// spread across many source IPs from creating an unbounded native-work queue.
+export const loginHashLimiter = createLoginHashLimiter();
+const LOGIN_BUSY_ERROR_CODES = new Set(['QUEUE_FULL', 'QUEUE_TIMEOUT']);
+const LOGIN_BUSY_MESSAGE = '登录服务繁忙，请稍后重试。';
 
 // Session Secret: from environment or randomly generated at runtime
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const configuredSessionSecret = String(process.env.SESSION_SECRET || '');
+if (configuredSessionSecret && Buffer.byteLength(configuredSessionSecret, 'utf8') < 32) {
+  throw new Error('SESSION_SECRET must contain at least 32 bytes when explicitly configured');
+}
+if ([
+  'replace_with_a_long_random_secret',
+  'your_secure_session_secret_here',
+  'change_this_to_a_random_long_string_in_production'
+].includes(configuredSessionSecret.trim().toLowerCase())) {
+  throw new Error('SESSION_SECRET is still set to a public example placeholder');
+}
+const SESSION_SECRET = configuredSessionSecret || crypto.randomBytes(32).toString('hex');
 const SESSION_COOKIE_NAME = 'agm_session';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const MIN_PASSWORD_LENGTH = 12;
+const MAX_ACTIVE_SESSIONS = 1000;
 
 // In-Memory Sessions Map with auto-pruning
 const sessions = new Map();
+const sessionInvalidationListeners = new Set();
 
 // Rate Limiting Map: ip -> { count, firstAttempt, lockedUntil }
 const loginRateLimit = new Map();
@@ -80,6 +117,16 @@ export function recordFailedAttempt(ip) {
   recordLoginAttempt(ip, false);
 }
 
+function releaseFailedAttemptReservation(ip) {
+  const entry = loginRateLimit.get(ip);
+  if (!entry) return;
+  entry.count = Math.max(0, entry.count - 1);
+  if (entry.count < MAX_LOGIN_ATTEMPTS) entry.lockedUntil = null;
+  if (entry.count === 0) {
+    loginRateLimit.delete(ip);
+  }
+}
+
 export function resetFailedAttempts(ip) {
   loginRateLimit.delete(ip);
 }
@@ -106,10 +153,28 @@ export function unsignCookie(signedValue) {
 }
 
 // Session Creation & Verification
+function notifySessionInvalidated(token) {
+  for (const listener of sessionInvalidationListeners) {
+    try { listener(token); } catch (_) {}
+  }
+}
+
+function deleteSession(token) {
+  if (!sessions.delete(token)) return false;
+  notifySessionInvalidated(token);
+  return true;
+}
+
 function pruneExpiredSessions(now = Date.now()) {
   for (const [token, session] of sessions.entries()) {
-    if (now > session.expiresAt) sessions.delete(token);
+    if (now > session.expiresAt) deleteSession(token);
   }
+}
+
+export function onSessionInvalidated(listener) {
+  if (typeof listener !== 'function') throw new TypeError('Session invalidation listener must be a function');
+  sessionInvalidationListeners.add(listener);
+  return () => sessionInvalidationListeners.delete(listener);
 }
 
 export function createSession(user = { username: 'admin' }) {
@@ -122,22 +187,25 @@ export function createSession(user = { username: 'admin' }) {
     expiresAt: Date.now() + SESSION_TTL_MS
   };
   sessions.set(token, session);
+  while (sessions.size > MAX_ACTIVE_SESSIONS) {
+    deleteSession(sessions.keys().next().value);
+  }
   return token;
 }
 
-export function getSession(token) {
+export function getSession(token, options = {}) {
   if (!token) return null;
   const session = sessions.get(token);
   if (!session) return null;
 
   if (Date.now() > session.expiresAt) {
-    sessions.delete(token);
+    deleteSession(token);
     return null;
   }
 
   // Sliding window: renew session if more than 1 hour has passed since last activity
   const ONE_HOUR_MS = 60 * 60 * 1000;
-  if (Date.now() - (session.lastActiveAt || session.createdAt) > ONE_HOUR_MS) {
+  if (options.touch !== false && Date.now() - (session.lastActiveAt || session.createdAt) > ONE_HOUR_MS) {
     session.expiresAt = Date.now() + SESSION_TTL_MS;
     session.lastActiveAt = Date.now();
   }
@@ -146,9 +214,7 @@ export function getSession(token) {
 }
 
 export function destroySession(token) {
-  if (token) {
-    sessions.delete(token);
-  }
+  if (token) deleteSession(token);
 }
 
 export function isPasswordSet() {
@@ -167,6 +233,8 @@ export function setInitialPassword(password, username = 'admin') {
   if (cleanUser.length > 64 || /[\u0000-\u001f\u007f]/.test(cleanUser)) {
     throw new Error('管理员用户名不得超过 64 个字符或包含控制字符');
   }
+  const passwordValidationError = validateAdminPassword(password);
+  if (passwordValidationError) throw new Error(passwordValidationError);
 
   const record = {
     username: cleanUser,
@@ -176,7 +244,7 @@ export function setInitialPassword(password, username = 'admin') {
   return true;
 }
 
-export function authenticateUser(username, password, ip = '127.0.0.1') {
+export async function authenticateUser(username, password, ip = '127.0.0.1') {
   const rateCheck = checkRateLimit(ip);
   if (!rateCheck.allowed) {
     return { success: false, error: rateCheck.error };
@@ -187,12 +255,35 @@ export function authenticateUser(username, password, ip = '127.0.0.1') {
     return { success: false, needsSetup: true, error: '系统尚未配置管理员密码，请先完成初始密码设置。' };
   }
 
+  // Reserve the attempt before starting PBKDF2. Without this, a burst of
+  // concurrent requests could all pass the limiter before any one of them
+  // finished hashing and recorded its failure.
+  recordFailedAttempt(ip);
   const inputUser = typeof username === 'string' ? username.trim() : '';
   const isUsernameMatch = (inputUser === authRecord.username);
-  const isPasswordMatch = isUsernameMatch && verifyPassword(password || '', authRecord);
+  // Always perform the same password derivation for an initialized account so
+  // username validity is not exposed through a large timing difference.
+  let isPasswordMatch;
+  try {
+    isPasswordMatch = await loginHashLimiter.run(
+      () => verifyPasswordAsync(password || '', authRecord)
+    );
+  } catch (error) {
+    if (!LOGIN_BUSY_ERROR_CODES.has(error?.code)) throw error;
+    // Capacity rejection is not a credential failure. The reservation still
+    // protected the per-IP limiter while this request was queued.
+    releaseFailedAttemptReservation(ip);
+    return {
+      success: false,
+      busy: true,
+      code: 'AUTH_BUSY',
+      error: LOGIN_BUSY_MESSAGE,
+      retryAfterSeconds: Math.max(1, Math.ceil(loginHashLimiter.queueTimeoutMs / 1000))
+    };
+  }
 
   const isValid = isUsernameMatch && isPasswordMatch;
-  recordLoginAttempt(ip, isValid);
+  if (isValid) resetFailedAttempts(ip);
 
   if (!isValid) {
     return { success: false, error: '用户名或密码错误' };
@@ -267,7 +358,10 @@ export function authenticateWebSocketRequest(request) {
     const signedToken = cookies[SESSION_COOKIE_NAME];
     const token = unsignCookie(signedToken);
     const session = getSession(token);
-    return Boolean(session);
+    if (!session) return false;
+    request.authSessionToken = token;
+    request.authSession = session;
+    return true;
   } catch (_) {
     return false;
   }
@@ -278,5 +372,6 @@ export {
   SESSION_TTL_MS,
   hashPassword,
   verifyPassword,
+  verifyPasswordAsync,
   HASH_ITERATIONS
 };

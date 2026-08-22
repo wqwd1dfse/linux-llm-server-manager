@@ -17,6 +17,8 @@ function isSameHostOrigin(origin, host) {
 }
 
 export function applySecurityHeaders(req, res, next) {
+  const requestPath = typeof req.path === 'string' ? req.path : '';
+  const requestMethod = String(req.method || 'GET').toUpperCase();
   // Prevent MIME type sniffing
   res.setHeader('X-Content-Type-Options', 'nosniff');
 
@@ -25,6 +27,13 @@ export function applySecurityHeaders(req, res, next) {
   // Isolate the administration surface from cross-origin windows/resources.
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+
+  // Administrative API responses may contain host inventory, paths and
+  // credentials metadata. They must never be retained by shared/browser caches.
+  if (requestPath.startsWith('/api/')) {
+    res.setHeader('Cache-Control', 'no-store, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+  }
 
   if (req.secure === true) {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
@@ -71,8 +80,21 @@ export function applySecurityHeaders(req, res, next) {
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
     }
 
-    if (req.method === 'OPTIONS') {
+    if (requestMethod === 'OPTIONS') {
       return res.status(isAllowed ? 204 : 403).end();
+    }
+
+    const isUnsafeApiRequest = requestPath.startsWith('/api/') && !['GET', 'HEAD'].includes(requestMethod);
+    if (isUnsafeApiRequest && !isAllowed) {
+      return res.status(403).json({ success: false, error: 'Request origin is not allowed' });
+    }
+  } else if (requestPath.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(requestMethod)) {
+    // Modern browsers send Sec-Fetch-Site even when an Origin header is
+    // omitted. Reject sibling-site and cross-site form submissions while
+    // preserving CLI/API clients that do not send browser fetch metadata.
+    const fetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+    if (fetchSite === 'same-site' || fetchSite === 'cross-site') {
+      return res.status(403).json({ success: false, error: 'Cross-site request is not allowed' });
     }
   }
 
@@ -86,6 +108,7 @@ export function verifyWebSocketOrigin(request) {
 
   try {
     const originUrl = new URL(origin);
+    if (!['http:', 'https:'].includes(originUrl.protocol)) return false;
     // If same host
     if (originUrl.host === host) return true;
     // Check whitelist

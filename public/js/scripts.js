@@ -1,11 +1,22 @@
 // Scripts & DevOps Toolbox Execution
 
 const scriptsText = (zh, en) => window.localize ? window.localize(zh, en) : en;
+let presetsRequestSequence = 0;
+let scriptExecutionSequence = 0;
 
 window.initScripts = function () {
   loadPresets();
   setupScriptEvents();
 };
+
+window.addEventListener('servercontextchange', () => {
+  presetsRequestSequence += 1;
+  scriptExecutionSequence += 1;
+  document.getElementById('scripts-list-container')?.replaceChildren();
+  const output = document.getElementById('script-output-console');
+  if (output) output.textContent = '';
+  queueMicrotask(loadPresets);
+});
 
 window.addEventListener('languagechange', () => {
   if (window.currentView === 'scripts') loadPresets();
@@ -14,9 +25,13 @@ window.addEventListener('languagechange', () => {
 async function loadPresets() {
   const container = document.getElementById('scripts-list-container');
   if (!container) return;
+  const requestSequence = ++presetsRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
 
   try {
     const res = await window.api.request('/api/scripts/presets');
+    if (requestSequence !== presetsRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     const presets = res.presets || [];
     const customEnabled = Boolean(res.customScriptsEnabled);
 
@@ -80,6 +95,7 @@ async function loadPresets() {
       container.appendChild(card);
     }
   } catch (err) {
+    if (requestSequence !== presetsRequestSequence) return;
     container.innerHTML = '<div style="color: var(--perf-red); padding: 10px;">' + scriptsText('无法加载预设脚本: ', 'Failed to load preset scripts: ') + window.escapeHtml(err.message) + '</div>';
   }
 }
@@ -100,6 +116,8 @@ async function runPresetScript(scriptId) {
 
 async function executeScriptRequest(payload) {
   const outputEl = document.getElementById('script-output-console');
+  const requestSequence = ++scriptExecutionSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
   if (outputEl) outputEl.textContent = '正在执行脚本，请稍候...\n';
 
   try {
@@ -108,11 +126,15 @@ async function executeScriptRequest(payload) {
       body: JSON.stringify(payload)
     });
 
+    if (requestSequence !== scriptExecutionSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
+
     if (outputEl) {
       outputEl.textContent = `[执行指令]: ${res.command}\n[执行状态]: 退出码 ${res.exitCode}\n\n--- 标准输出 (STDOUT) ---\n${res.stdout || '(无输出)'}\n\n--- 错误输出 (STDERR) ---\n${res.stderr || '(无错误)'}`;
       outputEl.scrollTop = outputEl.scrollHeight;
     }
   } catch (err) {
+    if (requestSequence !== scriptExecutionSequence) return;
     if (outputEl) {
     outputEl.textContent = scriptsText('[执行失败]: ', '[Execution failed]: ') + err.message;
     }

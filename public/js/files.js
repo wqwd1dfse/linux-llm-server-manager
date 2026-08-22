@@ -7,9 +7,24 @@ let currentEditingPath = null;
 let selectedPaths = new Set();
 let clipboard = null; // { type: 'copy'|'cut', items: [...] }
 let contextTarget = null; // { path, name, isDirectory }
+let contextMenuInvoker = null;
+let fileListRequestSequence = 0;
+let fileListAbortController = null;
+let fileEditorRequestSequence = 0;
+let fileEditorAbortController = null;
+let fileSaveRequestSequence = 0;
+let trashItemsRequestSequence = 0;
+let trashItemsAbortController = null;
+let filePropertiesRequestSequence = 0;
+let filePropertiesAbortController = null;
 const FILE_FAVORITES_PREFIX = 'server_manager_file_favorites_v1';
 
 window.currentPath = currentPath;
+
+window.addEventListener('servercontextchange', () => {
+  resetFileServerState({ closeModals: true });
+  queueMicrotask(() => loadFileList(currentPath, false));
+});
 
 window.initFiles = function () {
   loadFileList(currentPath);
@@ -24,10 +39,6 @@ window.initFiles = function () {
 };
 
 function setupToolbarEvents() {
-  document.getElementById('cmd-btn-refresh')?.addEventListener('click', () => {
-    if (window.currentView === 'files') loadFileList(currentPath);
-  });
-
   document.getElementById('nav-btn-up')?.addEventListener('click', () => {
     if (currentPath !== '/' && window.currentView === 'files') {
       const parent = window.path.dirname(currentPath);
@@ -154,10 +165,17 @@ function setupFileFavorites() {
 async function loadTrashItems() {
   const tbody = document.getElementById('trash-items-body');
   if (!tbody) return;
+  const requestSequence = ++trashItemsRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
+  trashItemsAbortController?.abort();
+  const requestController = new AbortController();
+  trashItemsAbortController = requestController;
   tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">正在读取远程回收站...</td></tr>';
 
   try {
-    const res = await window.api.request('/api/files/trash');
+    const res = await window.api.request('/api/files/trash', { signal: requestController.signal });
+    if (requestSequence !== trashItemsRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     const items = res.data?.items || [];
     const location = document.getElementById('trash-location-label');
     if (location) location.innerText = `${res.data?.trashDir || '远程回收站'} · ${items.length} 项`;
@@ -197,7 +215,10 @@ async function loadTrashItems() {
       tbody.appendChild(row);
     }
   } catch (err) {
+    if (err.name === 'AbortError' || requestSequence !== trashItemsRequestSequence) return;
     tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; color:var(--perf-red);">读取失败: ${window.escapeHtml(err.message)}</td></tr>`;
+  } finally {
+    if (trashItemsAbortController === requestController) trashItemsAbortController = null;
   }
 }
 
@@ -234,13 +255,57 @@ function setupTrashManager() {
   });
 }
 
-window.refreshFileServerContext = function () {
+function resetFileServerState({ closeModals = false } = {}) {
+  fileListRequestSequence += 1;
+  fileListAbortController?.abort();
+  fileListAbortController = null;
+  fileEditorRequestSequence += 1;
+  fileEditorAbortController?.abort();
+  fileEditorAbortController = null;
+  fileSaveRequestSequence += 1;
+  trashItemsRequestSequence += 1;
+  trashItemsAbortController?.abort();
+  trashItemsAbortController = null;
+  filePropertiesRequestSequence += 1;
+  filePropertiesAbortController?.abort();
+  filePropertiesAbortController = null;
   currentPath = '/root';
   pathHistory = ['/root'];
   historyIndex = 0;
+  currentEditingPath = null;
+  selectedPaths.clear();
+  clipboard = null;
+  contextTarget = null;
+  contextMenuInvoker = null;
   window.currentPath = currentPath;
+  document.getElementById('file-context-menu')?.classList.remove('show');
+  const editor = document.getElementById('editor-textarea');
+  if (editor) editor.value = '';
+  const saveButton = document.getElementById('btn-editor-save');
+  if (saveButton) {
+    saveButton.disabled = false;
+    saveButton.innerText = '保存更改 (Ctrl+S)';
+  }
+  const preview = document.getElementById('image-preview-element');
+  if (preview) preview.removeAttribute('src');
+  if (closeModals) {
+    [
+      'modal-editor', 'modal-properties', 'modal-image-preview', 'modal-file-trash',
+      'modal-chmod', 'modal-compress', 'modal-new-item'
+    ].forEach((id) => window.closeModal?.(id));
+  }
+  updateSelectionToolbar();
+  updateClipboardButton();
   renderFileFavorites();
-  loadFileList(currentPath, false);
+}
+
+window.refreshFileServerContext = function () {
+  resetFileServerState();
+  return loadFileList(currentPath, false);
+};
+
+window.refreshCurrentFileList = function () {
+  return loadFileList(currentPath);
 };
 
 function setupAddressBarInput() {
@@ -302,12 +367,21 @@ function setupDragAndDrop() {
 async function loadFileList(targetPath, recordHistory = true) {
   const tbody = document.getElementById('files-table-body');
   if (!tbody) return;
+  const requestSequence = ++fileListRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
+  fileListAbortController?.abort();
+  const requestController = new AbortController();
+  fileListAbortController = requestController;
   tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--win-text-muted);">正在加载文件列表...</td></tr>';
   selectedPaths.clear();
   updateSelectionToolbar();
 
   try {
-    const res = await window.api.request(`/api/files/list?path=${encodeURIComponent(targetPath)}`);
+    const res = await window.api.request(`/api/files/list?path=${encodeURIComponent(targetPath)}`, {
+      signal: requestController.signal
+    });
+    if (requestSequence !== fileListRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     currentPath = res.data.currentPath;
     window.currentPath = currentPath;
 
@@ -486,7 +560,10 @@ async function loadFileList(targetPath, recordHistory = true) {
       tbody.appendChild(tr);
     }
   } catch (err) {
+    if (err.name === 'AbortError' || requestSequence !== fileListRequestSequence) return;
     tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--perf-red); padding: 30px;">无法读取目录: ${window.escapeHtml(err.message)}</td></tr>`;
+  } finally {
+    if (fileListAbortController === requestController) fileListAbortController = null;
   }
 }
 
@@ -522,6 +599,13 @@ function updateSelectionToolbar() {
 }
 
 // Context Menu (Right-Click)
+window.closeFileContextMenu = function ({ restoreFocus = true } = {}) {
+  document.getElementById('file-context-menu')?.classList.remove('show');
+  const invoker = contextMenuInvoker;
+  contextMenuInvoker = null;
+  if (restoreFocus && invoker?.isConnected) invoker.focus();
+};
+
 function setupContextMenu() {
   const menu = document.getElementById('file-context-menu');
   if (!menu) return;
@@ -536,19 +620,22 @@ function setupContextMenu() {
       items[(current + offset + items.length) % items.length]?.focus();
     } else if (event.key === 'Escape') {
       event.preventDefault();
-      menu.classList.remove('show');
+      window.closeFileContextMenu();
     }
   });
 
   document.addEventListener('click', (e) => {
     if (!menu.contains(e.target)) {
-      menu.classList.remove('show');
+      window.closeFileContextMenu({ restoreFocus: false });
     }
   });
 
   window.handleRowContextMenu = function (e, pathStr, name, isDir) {
     e.preventDefault();
     contextTarget = { path: pathStr, name, isDirectory: isDir };
+    contextMenuInvoker = e.currentTarget
+      || document.activeElement?.closest?.('tr[data-path]')
+      || null;
 
     menu.style.left = `${Math.min(e.clientX, window.innerWidth - 180)}px`;
     menu.style.top = `${Math.min(e.clientY, window.innerHeight - 300)}px`;
@@ -610,14 +697,14 @@ window.batchDelete = async function () {
   const items = Array.from(selectedPaths);
   if (items.length === 0) return;
 
-  if (!confirm(`确定要永久批量删除选中的 ${items.length} 个项目吗？`)) return;
+  if (!confirm(`确定将选中的 ${items.length} 个项目移入回收站吗？可稍后恢复。`)) return;
 
   try {
     await window.api.request('/api/files/batch-delete', {
       method: 'POST',
       body: JSON.stringify({ paths: items })
     });
-    window.toast(`已成功删除 ${items.length} 个项目`, 'success');
+    window.toast(`已将 ${items.length} 个项目移入回收站`, 'success');
     loadFileList(currentPath);
   } catch (_) {}
 };
@@ -733,6 +820,11 @@ window.showChmodModal = function (targetPath) {
 window.showPropertiesModal = async function (targetPath) {
   const p = targetPath || (contextTarget ? contextTarget.path : null);
   if (!p) return;
+  const requestSequence = ++filePropertiesRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
+  filePropertiesAbortController?.abort();
+  const requestController = new AbortController();
+  filePropertiesAbortController = requestController;
 
   document.getElementById('prop-path').innerText = p;
   document.getElementById('prop-size').innerText = '正在计算...';
@@ -742,14 +834,21 @@ window.showPropertiesModal = async function (targetPath) {
   window.showModal('modal-properties');
 
   try {
-    const res = await window.api.request(`/api/files/properties?path=${encodeURIComponent(p)}`);
+    const res = await window.api.request(`/api/files/properties?path=${encodeURIComponent(p)}`, {
+      signal: requestController.signal
+    });
+    if (requestSequence !== filePropertiesRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     const d = res.data;
     document.getElementById('prop-size').innerText = `${d.diskSize} (${d.exactBytes.toLocaleString()} 字节)`;
     document.getElementById('prop-owner').innerText = `${d.owner}:${d.group}`;
     document.getElementById('prop-modify').innerText = d.modifyTime;
     document.getElementById('prop-perm').innerText = `${d.octalPerm}`;
   } catch (err) {
+    if (err.name === 'AbortError' || requestSequence !== filePropertiesRequestSequence) return;
     document.getElementById('prop-size').innerText = `获取失败: ${err.message}`;
+  } finally {
+    if (filePropertiesAbortController === requestController) filePropertiesAbortController = null;
   }
 };
 
@@ -757,7 +856,9 @@ window.showPropertiesModal = async function (targetPath) {
 window.previewImage = function (filePath, name) {
   document.getElementById('image-preview-title').innerText = name || filePath;
   const img = document.getElementById('image-preview-element');
-  if (img) img.src = `/api/files/preview?path=${encodeURIComponent(filePath)}&t=${Date.now()}`;
+  if (img) img.src = window.withSshTargetEpochUrl(
+    `/api/files/preview?path=${encodeURIComponent(filePath)}&t=${Date.now()}`
+  );
   window.showModal('modal-image-preview');
 };
 
@@ -776,8 +877,14 @@ async function uploadMultipleFiles(files) {
   window.toast(`正在上传 ${files.length} 个文件...`, 'info');
 
   try {
-    const res = await fetch('/api/files/upload', { method: 'POST', body: formData });
+    const res = await fetch('/api/files/upload', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: window.getSshTargetRequestHeaders(),
+      body: formData
+    });
     const data = await res.json();
+    window.reportSshTargetError(data);
     if (!res.ok || !data.success) throw new Error(data.error || '上传失败');
     window.toast(data.message || '上传完成!', 'success');
     loadFileList(currentPath);
@@ -817,13 +924,18 @@ function renderAddressBar(p) {
 }
 
 window.navigateToDir = function (dirPath) {
-  loadFileList(dirPath);
+  return loadFileList(dirPath);
 };
 
 window.openFileEditor = async function (filePath) {
   const p = filePath || (contextTarget ? contextTarget.path : null);
   if (!p) return;
 
+  const requestSequence = ++fileEditorRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
+  fileEditorAbortController?.abort();
+  const requestController = new AbortController();
+  fileEditorAbortController = requestController;
   currentEditingPath = p;
   document.getElementById('editor-filename').innerText = p;
   const textarea = document.getElementById('editor-textarea');
@@ -831,15 +943,26 @@ window.openFileEditor = async function (filePath) {
   window.showModal('modal-editor');
 
   try {
-    const res = await window.api.request(`/api/files/read?path=${encodeURIComponent(p)}`);
+    const res = await window.api.request(`/api/files/read?path=${encodeURIComponent(p)}`, {
+      signal: requestController.signal
+    });
+    if (requestSequence !== fileEditorRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)
+      || currentEditingPath !== p) return;
     if (textarea) textarea.value = res.data.content;
   } catch (err) {
+    if (err.name === 'AbortError' || requestSequence !== fileEditorRequestSequence) return;
     if (textarea) textarea.value = `无法加载文件: ${err.message}`;
+  } finally {
+    if (fileEditorAbortController === requestController) fileEditorAbortController = null;
   }
 };
 
 async function handleSaveEditor() {
   if (!currentEditingPath) return;
+  const editingPath = currentEditingPath;
+  const requestSequence = ++fileSaveRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
   const content = document.getElementById('editor-textarea')?.value;
   const btn = document.getElementById('btn-editor-save');
 
@@ -851,13 +974,18 @@ async function handleSaveEditor() {
   try {
     await window.api.request('/api/files/save', {
       method: 'POST',
-      body: JSON.stringify({ path: currentEditingPath, content })
+      body: JSON.stringify({ path: editingPath, content })
     });
+    if (requestSequence !== fileSaveRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)
+      || currentEditingPath !== editingPath) return;
     window.toast('文件已成功保存!', 'success');
     window.closeModal('modal-editor');
     loadFileList(currentPath);
+  } catch (_) {
+    // window.api already surfaced the failure; keep the event-handler promise handled.
   } finally {
-    if (btn) {
+    if (btn && requestSequence === fileSaveRequestSequence) {
       btn.disabled = false;
       btn.innerText = '保存更改 (Ctrl+S)';
     }
@@ -867,7 +995,7 @@ async function handleSaveEditor() {
 window.downloadFile = function (filePath) {
   const p = filePath || (contextTarget ? contextTarget.path : null);
   if (!p) return;
-  window.open(`/api/files/download?path=${encodeURIComponent(p)}`, '_blank');
+  window.open(window.withSshTargetEpochUrl(`/api/files/download?path=${encodeURIComponent(p)}`), '_blank', 'noopener');
 };
 
 window.deleteItem = async function (targetPath, isDirectory) {
@@ -877,7 +1005,7 @@ window.deleteItem = async function (targetPath, isDirectory) {
   const isDir = isDirectory !== undefined ? isDirectory : (contextTarget ? contextTarget.isDirectory : false);
   const label = isDir ? '文件夹及其所有子项' : '文件';
 
-  if (!confirm(`确定要永久删除此 ${label} 吗？\n${p}`)) return;
+  if (!confirm(`确定将此 ${label} 移入回收站吗？可稍后恢复。\n${p}`)) return;
 
   try {
     await window.api.request('/api/files/delete', {

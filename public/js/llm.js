@@ -7,9 +7,26 @@ let chatHistory = [];
 let isGenerating = false;
 let abortController = null;
 let llmPollingTimer = null;
+let llmPollingGeneration = 0;
 let hfCurrentRepo = null;
 let hfMirrorEnabled = false;
 const localModelMetadata = new Map();
+let llmStatusRequestSequence = 0;
+let llmStatusAbortController = null;
+let localModelsRequestSequence = 0;
+let localModelsAbortController = null;
+let hfSearchRequestSequence = 0;
+let hfSearchAbortController = null;
+let hfFilesRequestSequence = 0;
+let hfFilesAbortController = null;
+let hfReadmeRequestSequence = 0;
+let hfReadmeAbortController = null;
+let downloadTasksRequestSequence = 0;
+let downloadTasksAbortController = null;
+let llmLogsRequestSequence = 0;
+let llmLogsAbortController = null;
+let chatGenerationSequence = 0;
+const STREAM_RENDER_INTERVAL_MS = 50;
 const LLM_LAUNCH_SETTINGS_KEY = 'llm_launch_settings_v1';
 const LLM_LAUNCH_PRESETS = {
   balanced: { ngl: 999, ctx: 32768, ctk: 'q8_0', ctv: 'q8_0', threads: '', parallel: 1, fa: true },
@@ -20,6 +37,99 @@ const LLM_LAUNCH_PRESETS = {
 function getLlmHost() {
   return window.serverConnectionConfig?.host || window.location.hostname || '127.0.0.1';
 }
+
+function llmPercent(value) {
+  const number = Number.parseFloat(String(value ?? '').replace('%', ''));
+  return Number.isFinite(number) ? Math.min(100, Math.max(0, number)) : 0;
+}
+
+function formatLlmCount(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.trunc(number).toLocaleString() : '0';
+}
+
+function renderChatEmptyState() {
+  const container = document.getElementById('chat-messages-container');
+  if (!container) return;
+  const empty = document.createElement('div');
+  empty.style.cssText = 'text-align: center; color: var(--win-text-muted); margin: auto; padding: 40px 20px;';
+  const icon = document.createElement('div');
+  icon.style.cssText = 'font-size: 36px; margin-bottom: 8px;';
+  icon.textContent = '🤖';
+  const title = document.createElement('div');
+  title.style.cssText = 'font-size: 14px; font-weight: 600; color: var(--win-text-primary);';
+  title.textContent = llmText('本地大模型推理交互控制台', 'Local LLM inference console');
+  const subtitle = document.createElement('div');
+  subtitle.style.cssText = 'font-size: 12px; margin-top: 4px;';
+  subtitle.textContent = llmText(`由 ${getLlmHost()} 上的本地推理服务驱动`, `Powered by the local inference service on ${getLlmHost()}`);
+  empty.append(icon, title, subtitle);
+  container.replaceChildren(empty);
+}
+
+function resetLlmServerState() {
+  llmStatusRequestSequence += 1;
+  llmStatusAbortController?.abort();
+  llmStatusAbortController = null;
+  localModelsRequestSequence += 1;
+  localModelsAbortController?.abort();
+  localModelsAbortController = null;
+  hfSearchRequestSequence += 1;
+  hfSearchAbortController?.abort();
+  hfSearchAbortController = null;
+  hfFilesRequestSequence += 1;
+  hfFilesAbortController?.abort();
+  hfFilesAbortController = null;
+  hfReadmeRequestSequence += 1;
+  hfReadmeAbortController?.abort();
+  hfReadmeAbortController = null;
+  downloadTasksRequestSequence += 1;
+  downloadTasksAbortController?.abort();
+  downloadTasksAbortController = null;
+  llmLogsRequestSequence += 1;
+  llmLogsAbortController?.abort();
+  llmLogsAbortController = null;
+  chatGenerationSequence += 1;
+  abortController?.abort();
+  abortController = null;
+  isGenerating = false;
+  toggleChatGenerating(false);
+
+  currentLlmStatus = null;
+  chatHistory = [];
+  hfCurrentRepo = null;
+  hfCurrentFilesList = [];
+  localModelMetadata.clear();
+  renderChatEmptyState();
+  renderLLMStatus({ isRunning: false });
+
+  const localBody = document.getElementById('local-models-table-body');
+  if (localBody) localBody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:20px; color:var(--win-text-muted);">服务器已切换，请刷新本地模型列表</td></tr>';
+  const taskBody = document.getElementById('download-tasks-table-body');
+  if (taskBody) taskBody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:30px; color:var(--win-text-muted);">服务器已切换，正在等待新任务数据</td></tr>';
+  document.getElementById('hf-models-grid')?.replaceChildren();
+  document.getElementById('hf-model-files-list')?.replaceChildren();
+  document.getElementById('hf-modal-readme-pane')?.replaceChildren();
+  if (document.getElementById('modal-hf-files')) window.closeModal?.('modal-hf-files');
+  if (document.getElementById('modal-start-llm')) window.closeModal?.('modal-start-llm');
+  if (document.getElementById('modal-llm-logs')) window.closeModal?.('modal-llm-logs');
+  const launchPath = document.getElementById('start-model-path');
+  const launchAlias = document.getElementById('start-model-alias');
+  if (launchPath) launchPath.value = '';
+  if (launchAlias) launchAlias.value = '';
+  setLaunchModelSize(0);
+}
+
+window.addEventListener('servercontextchange', () => {
+  resetLlmServerState();
+  syncHfExplorerPreferences();
+  queueMicrotask(() => {
+    loadLLMStatus(false);
+    if (window.currentView !== 'llm') return;
+    const activeTab = document.querySelector('.llm-nav-tab.active')?.getAttribute('data-tab');
+    if (activeTab === 'local') loadLocalModelsList();
+    if (activeTab === 'tasks') loadDownloadTasks(false);
+  });
+});
 
 
 window.initLLM = function () {
@@ -36,6 +146,18 @@ window.initLLM = function () {
   startLlmPolling();
 };
 
+function setupLocalModelsManager() {
+  document.getElementById('btn-refresh-local-models')?.addEventListener('click', loadLocalModelsList);
+  document.getElementById('local-models-filter')?.addEventListener('input', (event) => {
+    const q = event.target.value.toLowerCase().trim();
+    document.querySelectorAll('.local-model-row').forEach((row) => {
+      const name = row.getAttribute('data-name') || '';
+      const quant = row.getAttribute('data-quant') || '';
+      row.style.display = (!q || name.includes(q) || quant.includes(q)) ? '' : 'none';
+    });
+  });
+}
+
 window.addEventListener('languagechange', () => {
   if (window.currentView !== 'llm') return;
   if (currentLlmStatus) renderLLMStatus(currentLlmStatus);
@@ -46,8 +168,12 @@ window.addEventListener('languagechange', () => {
 });
 
 function startLlmPolling() {
+  const pollingGeneration = ++llmPollingGeneration;
   if (llmPollingTimer) clearTimeout(llmPollingTimer);
+  llmPollingTimer = null;
   const poll = async () => {
+    if (pollingGeneration !== llmPollingGeneration) return;
+    llmPollingTimer = null;
     if (window.currentView === 'llm' && !document.hidden) {
       const activeTab = document.querySelector('.llm-nav-tab.active')?.getAttribute('data-tab');
       if (activeTab === 'chat' || !activeTab) {
@@ -56,12 +182,21 @@ function startLlmPolling() {
         await loadDownloadTasks(false);
       }
     }
+    if (pollingGeneration !== llmPollingGeneration) return;
     llmPollingTimer = setTimeout(poll, window.getPollingInterval?.() || 2500);
   };
   llmPollingTimer = setTimeout(poll, window.getPollingInterval?.() || 2500);
 }
 
-window.addEventListener('preferenceschange', startLlmPolling);
+window.addEventListener('preferenceschange', () => {
+  const mirrorChanged = syncHfExplorerPreferences();
+  startLlmPolling();
+  if (mirrorChanged
+    && window.currentView === 'llm'
+    && document.querySelector('.llm-nav-tab.active')?.getAttribute('data-tab') === 'hf') {
+    triggerHFSearch();
+  }
+});
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && window.currentView === 'llm') startLlmPolling();
 });
@@ -86,14 +221,26 @@ function setupLLMTabs() {
 
 // 2. LLM Service Status
 async function loadLLMStatus(showToast = true) {
+  const requestSequence = ++llmStatusRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
+  llmStatusAbortController?.abort();
+  const requestController = new AbortController();
+  llmStatusAbortController = requestController;
   try {
-    const res = await window.api.request('/api/llm/status');
+    const res = await window.api.request('/api/llm/status', { signal: requestController.signal });
+    if (requestSequence !== llmStatusRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     currentLlmStatus = res.data;
     renderLLMStatus(currentLlmStatus);
   } catch (err) {
+    if (err.name === 'AbortError' || requestSequence !== llmStatusRequestSequence) return;
     if (showToast) console.error('Failed to load LLM status:', err);
+  } finally {
+    if (llmStatusAbortController === requestController) llmStatusAbortController = null;
   }
 }
+
+window.loadLLMStatus = loadLLMStatus;
 
 function renderLLMStatus(status) {
   const badge = document.getElementById('llm-status-badge');
@@ -193,11 +340,18 @@ async function loadLocalModelsList() {
   const tbody = document.getElementById('local-models-table-body');
   const diskBar = document.getElementById('local-disk-progress');
   const diskText = document.getElementById('local-disk-summary-text');
+  const requestSequence = ++localModelsRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
+  localModelsAbortController?.abort();
+  const requestController = new AbortController();
+  localModelsAbortController = requestController;
 
   if (tbody) tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--win-text-muted); padding: 20px;">正在扫描本地模型...</td></tr>';
 
   try {
-    const res = await window.api.request('/api/llm/local-models');
+    const res = await window.api.request('/api/llm/local-models', { signal: requestController.signal });
+    if (requestSequence !== localModelsRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     const { disk, models } = res.data;
     localModelMetadata.clear();
     for (const model of models) {
@@ -208,7 +362,7 @@ async function loadLocalModelsList() {
       diskText.innerText = llmText('存储空间: 已用 ', 'Storage: ') + disk.used + llmText(' / 总计 ', ' used / ') + disk.total + llmText(' (剩余 ', ' total (') + disk.free + llmText(' 可用)', ' available)');
     }
     if (diskBar && disk) {
-      const pct = parseInt(disk.percent.replace('%', ''), 10) || 0;
+      const pct = llmPercent(disk.percent);
       diskBar.style.width = `${pct}%`;
       diskBar.className = `win-progress-bar ${pct > 85 ? 'red' : pct > 65 ? 'yellow' : 'green'}`;
     }
@@ -331,20 +485,15 @@ async function loadLocalModelsList() {
       tbody.appendChild(tr);
     }
 
-    const filterInput = document.getElementById('local-models-filter');
-    filterInput?.addEventListener('input', (e) => {
-      const q = e.target.value.toLowerCase().trim();
-      document.querySelectorAll('.local-model-row').forEach(row => {
-        const name = row.getAttribute('data-name') || '';
-        const quant = row.getAttribute('data-quant') || '';
-        row.style.display = (!q || name.includes(q) || quant.includes(q)) ? '' : 'none';
-      });
-    });
-
   } catch (err) {
+    if (err.name === 'AbortError' || requestSequence !== localModelsRequestSequence) return;
     if (tbody) tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--perf-red); padding: 20px;">' + llmText('加载模型列表失败: ', 'Failed to load models: ') + window.escapeHtml(err.message) + '</td></tr>';
+  } finally {
+    if (localModelsAbortController === requestController) localModelsAbortController = null;
   }
 }
+
+window.loadLocalModelsList = loadLocalModelsList;
 
 window.copyModelPath = function (path) {
   navigator.clipboard.writeText(path).then(() => {
@@ -409,6 +558,20 @@ window.deleteLocalModel = async function (filePath, filename) {
 // 4. Hugging Face Hub Online Explorer
 let hfCurrentFilesList = [];
 
+function syncHfExplorerPreferences() {
+  const mirrorEnabled = localStorage.getItem('hf_mirror_enabled') === 'true';
+  const mirrorChanged = mirrorEnabled !== hfMirrorEnabled;
+  hfMirrorEnabled = mirrorEnabled;
+  const mirrorToggle = document.getElementById('hf-mirror-toggle');
+  if (mirrorToggle) mirrorToggle.checked = mirrorEnabled;
+  const modelRootTitle = document.getElementById('local-model-root-title');
+  if (modelRootTitle) {
+    modelRootTitle.textContent = `${llmText('📁 大模型专用存储盘', '📁 Model storage')} (${window.getDefaultHfModelDir?.() || '/mnt/models'})`;
+  }
+  return mirrorChanged;
+}
+window.syncHfExplorerPreferences = syncHfExplorerPreferences;
+
 function setupHFExplorer() {
   const searchInput = document.getElementById('hf-search-query');
   const searchBtn = document.getElementById('btn-hf-search');
@@ -417,15 +580,12 @@ function setupHFExplorer() {
   const directRepoInput = document.getElementById('hf-direct-repo-input');
   const directRepoBtn = document.getElementById('btn-hf-direct-jump');
 
-  const savedMirror = localStorage.getItem('hf_mirror_enabled');
-  if (savedMirror === 'true' && mirrorToggle) {
-    mirrorToggle.checked = true;
-    hfMirrorEnabled = true;
-  }
+  syncHfExplorerPreferences();
 
   mirrorToggle?.addEventListener('change', (e) => {
     hfMirrorEnabled = e.target.checked;
     localStorage.setItem('hf_mirror_enabled', hfMirrorEnabled ? 'true' : 'false');
+    window.syncHfSettingsControls?.();
     window.toast(hfMirrorEnabled ? '已切换至国内加速镜像 (hf-mirror.com)' : '已切换至官方源 (huggingface.co)', 'info');
     triggerHFSearch();
   });
@@ -474,8 +634,6 @@ function setupHFExplorer() {
       if (mode === 'readme') loadHFModelReadme(hfCurrentRepo);
     });
   });
-
-  document.getElementById('btn-refresh-local-models')?.addEventListener('click', loadLocalModelsList);
 }
 
 function triggerHFSearch() {
@@ -490,6 +648,11 @@ window.triggerHFSearch = triggerHFSearch;
 async function searchHFModels(query, sort = 'downloads') {
   const container = document.getElementById('hf-models-grid');
   if (!container) return;
+  const requestSequence = ++hfSearchRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
+  hfSearchAbortController?.abort();
+  const requestController = new AbortController();
+  hfSearchAbortController = requestController;
   container.innerHTML = `
     <div style="grid-column: 1/-1; text-align: center; color: var(--win-text-muted); padding: 50px 20px;">
       <div style="font-size: 32px; margin-bottom: 8px;">🔍</div>
@@ -500,7 +663,11 @@ async function searchHFModels(query, sort = 'downloads') {
 
   try {
     const mirrorParam = hfMirrorEnabled ? '&mirror=true' : '';
-    const res = await window.api.request(`/api/llm/hf/search?q=${encodeURIComponent(query)}&sort=${sort}&limit=30${mirrorParam}`);
+    const res = await window.api.request(`/api/llm/hf/search?q=${encodeURIComponent(query)}&sort=${encodeURIComponent(sort)}&limit=30${mirrorParam}`, {
+      signal: requestController.signal
+    });
+    if (requestSequence !== hfSearchRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     const models = res.data;
 
     if (models.length === 0) {
@@ -516,6 +683,8 @@ async function searchHFModels(query, sort = 'downloads') {
 
     container.innerHTML = '';
     for (const m of models) {
+      const downloads = formatLlmCount(m.downloads);
+      const likes = formatLlmCount(m.likes);
       const card = document.createElement('div');
       card.className = 'hf-model-card';
       card.addEventListener('click', () => openHFModelFilesModal(m.id));
@@ -535,8 +704,8 @@ async function searchHFModels(query, sort = 'downloads') {
 
         <div style="margin-top: 12px; border-top: 1px dashed var(--win-border); padding-top: 8px;">
           <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--win-text-secondary);">
-            <span>⬇️ ${(m.downloads || 0).toLocaleString()} ${llmText('下载', 'downloads')}</span>
-            <span>❤️ ${(m.likes || 0).toLocaleString()} ${llmText('点赞', 'likes')}</span>
+            <span>⬇️ ${downloads} ${llmText('下载', 'downloads')}</span>
+            <span>❤️ ${likes} ${llmText('点赞', 'likes')}</span>
           </div>
 
           <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center;">
@@ -550,6 +719,7 @@ async function searchHFModels(query, sort = 'downloads') {
       container.appendChild(card);
     }
   } catch (err) {
+    if (err.name === 'AbortError' || requestSequence !== hfSearchRequestSequence) return;
     container.innerHTML = `
       <div style="grid-column: 1/-1; text-align: center; color: var(--perf-red); padding: 40px;">
         <div style="font-size: 28px; margin-bottom: 6px;">⚠️</div>
@@ -557,10 +727,17 @@ async function searchHFModels(query, sort = 'downloads') {
         <button class="cmd-btn btn-sm" style="margin-top: 10px;" data-action="hf-search">重试</button>
       </div>
     `;
+  } finally {
+    if (hfSearchAbortController === requestController) hfSearchAbortController = null;
   }
 }
 
 window.openHFModelFilesModal = async function (repoId) {
+  const requestSequence = ++hfFilesRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
+  hfFilesAbortController?.abort();
+  const requestController = new AbortController();
+  hfFilesAbortController = requestController;
   hfCurrentRepo = repoId;
   const repoNameEl = document.getElementById('hf-modal-repo-name');
   if (repoNameEl) repoNameEl.innerText = repoId;
@@ -581,15 +758,23 @@ window.openHFModelFilesModal = async function (repoId) {
 
   try {
     const mirrorParam = hfMirrorEnabled ? '&mirror=true' : '';
-    const res = await window.api.request(`/api/llm/hf/model-files?repo=${encodeURIComponent(repoId)}${mirrorParam}`);
+    const res = await window.api.request(`/api/llm/hf/model-files?repo=${encodeURIComponent(repoId)}${mirrorParam}`, {
+      signal: requestController.signal
+    });
+    if (requestSequence !== hfFilesRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)
+      || hfCurrentRepo !== repoId) return;
     hfCurrentFilesList = res.data.files || [];
-    renderHFModalFiles(hfCurrentFilesList);
+    renderHFModalFiles(hfCurrentFilesList, repoId);
   } catch (err) {
+    if (err.name === 'AbortError' || requestSequence !== hfFilesRequestSequence) return;
     if (listContainer) listContainer.innerHTML = `<div style="text-align: center; color: var(--perf-red); padding: 30px;">获取文件列表失败: ${window.escapeHtml(err.message)}</div>`;
+  } finally {
+    if (hfFilesAbortController === requestController) hfFilesAbortController = null;
   }
 };
 
-function renderHFModalFiles(files) {
+function renderHFModalFiles(files, repoId = hfCurrentRepo) {
   const listContainer = document.getElementById('hf-model-files-list');
   if (!listContainer) return;
 
@@ -622,7 +807,7 @@ function renderHFModalFiles(files) {
     btnDirect.className = 'cmd-btn primary btn-sm';
     btnDirect.style.marginTop = '12px';
     btnDirect.textContent = '🚀 直接使用 llama-server 拉取并运行此 Repo';
-    btnDirect.addEventListener('click', () => startHfDirectRepo(hfCurrentRepo));
+    btnDirect.addEventListener('click', () => startHfDirectRepo(repoId));
     emptyBox.appendChild(btnDirect);
 
     listContainer.appendChild(emptyBox);
@@ -646,6 +831,7 @@ function renderHFModalFiles(files) {
   table.appendChild(thead);
 
   const tbody = document.createElement('tbody');
+  const targetDir = window.getHfModelDir?.() || window.getDefaultHfModelDir?.() || '/mnt/models';
   for (const f of files) {
     const tr = document.createElement('tr');
 
@@ -701,8 +887,8 @@ function renderHFModalFiles(files) {
 
     const btnDl = document.createElement('button');
     btnDl.className = 'cmd-btn primary btn-sm';
-    btnDl.textContent = '⬇️ 下载到 /mnt/models';
-    btnDl.addEventListener('click', () => startCloudDownload(hfCurrentRepo, f.filename, f.downloadUrl, f.sizeBytes));
+    btnDl.textContent = llmText(`⬇️ 下载到 ${targetDir}`, `⬇️ Download to ${targetDir}`);
+    btnDl.addEventListener('click', () => startCloudDownload(repoId, f.filename, f.downloadUrl, f.sizeBytes, targetDir));
     actWrap.appendChild(btnDl);
 
     const btnCopy = document.createElement('button');
@@ -740,19 +926,32 @@ window.copyDirectUrl = function (url) {
 
 async function loadHFModelReadme(repoId) {
   const container = document.getElementById('hf-modal-readme-pane');
-  if (!container) return;
+  if (!container || !repoId) return;
+  const requestSequence = ++hfReadmeRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
+  hfReadmeAbortController?.abort();
+  const requestController = new AbortController();
+  hfReadmeAbortController = requestController;
   container.innerHTML = '<div style="text-align: center; color: var(--win-text-muted); padding: 30px;">正在载入模型官方 README 说明...</div>';
 
   try {
     const mirrorParam = hfMirrorEnabled ? '&mirror=true' : '';
-    const res = await window.api.request(`/api/llm/hf/readme?repo=${encodeURIComponent(repoId)}${mirrorParam}`);
+    const res = await window.api.request(`/api/llm/hf/readme?repo=${encodeURIComponent(repoId)}${mirrorParam}`, {
+      signal: requestController.signal
+    });
+    if (requestSequence !== hfReadmeRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)
+      || hfCurrentRepo !== repoId) return;
     container.innerHTML = `
       <div class="hf-readme-container" style="background: var(--win-address-bg); border: 1px solid var(--win-border); border-radius: var(--radius-win); padding: 16px; font-size: 12px; line-height: 1.6; max-height: 480px; overflow-y: auto; color: var(--win-text-primary);">
         ${renderMarkdown(res.readme)}
       </div>
     `;
   } catch (err) {
+    if (err.name === 'AbortError' || requestSequence !== hfReadmeRequestSequence) return;
     container.innerHTML = `<div style="text-align: center; color: var(--perf-red); padding: 30px;">载入说明文档失败: ${window.escapeHtml(err.message)}</div>`;
+  } finally {
+    if (hfReadmeAbortController === requestController) hfReadmeAbortController = null;
   }
 }
 
@@ -770,8 +969,10 @@ window.startHfDirectRepo = function (repoId) {
 };
 
 // 5. Cloud Model Downloader
-window.startCloudDownload = async function (repo, filename, downloadUrl, totalBytes) {
+window.startCloudDownload = async function (repo, filename, downloadUrl, totalBytes, targetDir = window.getHfModelDir?.() || window.getDefaultHfModelDir?.() || '/mnt/models') {
   window.toast(`已加入下载队列: ${filename}`, 'info');
+  const tokenInput = document.getElementById('hf-access-token');
+  const hfToken = tokenInput?.value.trim() || '';
 
   try {
     const res = await window.api.request('/api/llm/hf/download', {
@@ -781,9 +982,15 @@ window.startCloudDownload = async function (repo, filename, downloadUrl, totalBy
         filename,
         downloadUrl,
         totalBytes,
-        targetDir: '/mnt/models'
+        targetDir,
+        ...(hfToken ? { hfToken } : {})
       })
     });
+    if (hfToken && tokenInput) {
+      tokenInput.value = '';
+      if (window.serverConnectionConfig) window.serverConnectionConfig.hasHfToken = true;
+      window.syncHfSettingsControls?.();
+    }
     window.toast(res.message, 'success');
     window.closeModal('modal-hf-files');
 
@@ -799,9 +1006,16 @@ function setupDownloadManager() {
 async function loadDownloadTasks(showToast = true) {
   const tbody = document.getElementById('download-tasks-table-body');
   if (!tbody) return;
+  const requestSequence = ++downloadTasksRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
+  downloadTasksAbortController?.abort();
+  const requestController = new AbortController();
+  downloadTasksAbortController = requestController;
 
   try {
-    const res = await window.api.request('/api/llm/hf/tasks');
+    const res = await window.api.request('/api/llm/hf/tasks', { signal: requestController.signal });
+    if (requestSequence !== downloadTasksRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     const tasks = res.tasks || [];
 
     const badge = document.getElementById('tasks-badge-count');
@@ -820,6 +1034,7 @@ async function loadDownloadTasks(showToast = true) {
     for (const t of tasks) {
       const isDl = t.status === 'downloading';
       const isDone = t.status === 'completed';
+      const taskPercent = llmPercent(t.percent);
 
       const tr = document.createElement('tr');
 
@@ -845,14 +1060,14 @@ async function loadDownloadTasks(showToast = true) {
       progHeader.style.justifyContent = 'space-between';
       progHeader.style.fontSize = '11px';
       progHeader.style.marginBottom = '2px';
-      progHeader.innerHTML = `<span>${window.escapeHtml(String(t.percent))}%</span><span>${window.escapeHtml(t.downloadedFormatted)} / ${window.escapeHtml(t.totalFormatted)}</span>`;
+      progHeader.innerHTML = `<span>${taskPercent}%</span><span>${window.escapeHtml(t.downloadedFormatted)} / ${window.escapeHtml(t.totalFormatted)}</span>`;
       tdProg.appendChild(progHeader);
 
       const progWrap = document.createElement('div');
       progWrap.className = 'win-progress';
       const progBar = document.createElement('div');
       progBar.className = `win-progress-bar ${isDone ? 'green' : 'blue'}`;
-      progBar.style.width = `${t.percent}%`;
+      progBar.style.width = `${taskPercent}%`;
       progWrap.appendChild(progBar);
       tdProg.appendChild(progWrap);
       tr.appendChild(tdProg);
@@ -906,7 +1121,10 @@ async function loadDownloadTasks(showToast = true) {
     }
 
   } catch (err) {
+    if (err.name === 'AbortError' || requestSequence !== downloadTasksRequestSequence) return;
     if (showToast) console.error('Failed to load tasks:', err);
+  } finally {
+    if (downloadTasksAbortController === requestController) downloadTasksAbortController = null;
   }
 }
 
@@ -949,8 +1167,6 @@ function setupChatControls() {
   stopBtn?.addEventListener('click', () => {
     if (abortController) {
       abortController.abort();
-      isGenerating = false;
-      toggleChatGenerating(false);
       window.toast('已中止生成', 'info');
     }
   });
@@ -966,16 +1182,7 @@ function setupChatControls() {
 function handleClearChat() {
   if (isGenerating) return;
   chatHistory = [];
-  const container = document.getElementById('chat-messages-container');
-  if (container) {
-    container.innerHTML = `
-      <div style="text-align: center; color: var(--win-text-muted); margin: auto; padding: 40px 20px;">
-        <div style="font-size: 36px; margin-bottom: 8px;">🤖</div>
-        <div style="font-size: 14px; font-weight: 600; color: var(--win-text-primary);">本地大模型推理交互控制台</div>
-        <div style="font-size: 12px; margin-top: 4px;">由 ${window.escapeHtml(getLlmHost())} 上的本地推理服务驱动</div>
-      </div>
-    `;
-  }
+  renderChatEmptyState();
 }
 
 async function handleSendMessage() {
@@ -1010,18 +1217,135 @@ async function handleSendMessage() {
 
   isGenerating = true;
   toggleChatGenerating(true);
-  abortController = new AbortController();
+  const generationSequence = ++chatGenerationSequence;
+  const generationEpoch = window.getServerContextEpoch?.() ?? 0;
+  const requestController = new AbortController();
+  abortController = requestController;
 
   let fullResponse = '';
   let thinkingResponse = '';
   let tokenCount = 0;
   const startTime = Date.now();
   let firstTokenTime = null;
+  let lastStreamRenderAt = 0;
+  let streamRenderTimer = null;
+  let streamRenderFrame = null;
+  let streamedThinkingLength = 0;
+  let streamedAnswerLength = 0;
+  let thinkingStreamText = null;
+
+  const answerStreamContainer = document.createElement('div');
+  answerStreamContainer.className = 'chat-stream-plaintext';
+  const answerStreamText = document.createTextNode('');
+  answerStreamContainer.appendChild(answerStreamText);
+  contentElement.replaceChildren(answerStreamContainer);
+
+  const isCurrentGeneration = () => generationSequence === chatGenerationSequence
+    && generationEpoch === (window.getServerContextEpoch?.() ?? 0)
+    && !requestController.signal.aborted;
+
+  const cancelScheduledStreamRender = () => {
+    if (streamRenderTimer !== null) {
+      clearTimeout(streamRenderTimer);
+      streamRenderTimer = null;
+    }
+    if (streamRenderFrame !== null) {
+      cancelAnimationFrame(streamRenderFrame);
+      streamRenderFrame = null;
+    }
+  };
+
+  const ensureThinkingStream = () => {
+    if (thinkingStreamText) return thinkingStreamText;
+    const details = document.createElement('details');
+    details.className = 'chat-thinking-box';
+    details.open = true;
+    const summary = document.createElement('summary');
+    summary.textContent = llmText('🧠 思考与推理过程', '🧠 Reasoning process');
+    const thinkingContainer = document.createElement('div');
+    thinkingContainer.className = 'chat-thinking-content chat-stream-plaintext';
+    thinkingStreamText = document.createTextNode('');
+    thinkingContainer.appendChild(thinkingStreamText);
+    details.append(summary, thinkingContainer);
+    contentElement.insertBefore(details, answerStreamContainer);
+    return thinkingStreamText;
+  };
+
+  const renderStreamNow = ({ final = false } = {}) => {
+    if (!isCurrentGeneration()) return false;
+    if (final) {
+      const fragment = document.createDocumentFragment();
+      if (thinkingResponse) {
+        const details = document.createElement('details');
+        details.className = 'chat-thinking-box';
+        details.open = true;
+        const summary = document.createElement('summary');
+        summary.textContent = llmText('🧠 思考与推理过程', '🧠 Reasoning process');
+        const thinkingContainer = document.createElement('div');
+        thinkingContainer.className = 'chat-thinking-content';
+        thinkingContainer.innerHTML = renderMarkdown(thinkingResponse);
+        details.append(summary, thinkingContainer);
+        fragment.appendChild(details);
+      }
+      if (fullResponse) {
+        const answerContainer = document.createElement('div');
+        answerContainer.innerHTML = renderMarkdown(fullResponse);
+        fragment.appendChild(answerContainer);
+      }
+      contentElement.replaceChildren(fragment);
+      streamedThinkingLength = thinkingResponse.length;
+      streamedAnswerLength = fullResponse.length;
+    } else {
+      if (thinkingResponse.length > streamedThinkingLength) {
+        ensureThinkingStream().appendData(thinkingResponse.slice(streamedThinkingLength));
+        streamedThinkingLength = thinkingResponse.length;
+      }
+      if (fullResponse.length > streamedAnswerLength) {
+        answerStreamText.appendData(fullResponse.slice(streamedAnswerLength));
+        streamedAnswerLength = fullResponse.length;
+      }
+    }
+
+    const elapsedSec = (Date.now() - (firstTokenTime || startTime)) / 1000;
+    if (elapsedSec > 0) {
+      const tps = (tokenCount / elapsedSec).toFixed(1);
+      if (speedBadge) speedBadge.innerText = `⚡ ${tps} tok/s | ${tokenCount} tok`;
+      const tpsEl = document.getElementById('chat-token-speed');
+      if (tpsEl) tpsEl.innerText = `${tps} t/s`;
+    }
+    const countEl = document.getElementById('chat-token-count');
+    if (countEl) countEl.innerText = `${tokenCount} tokens`;
+    lastStreamRenderAt = performance.now();
+    scrollChatToBottom();
+    return true;
+  };
+
+  const scheduleStreamRender = () => {
+    if (!isCurrentGeneration() || streamRenderTimer !== null || streamRenderFrame !== null) return;
+    const delay = Math.max(0, STREAM_RENDER_INTERVAL_MS - (performance.now() - lastStreamRenderAt));
+    streamRenderTimer = setTimeout(() => {
+      streamRenderTimer = null;
+      if (!isCurrentGeneration()) return;
+      streamRenderFrame = requestAnimationFrame(() => {
+        streamRenderFrame = null;
+        renderStreamNow();
+      });
+    }, delay);
+  };
+
+  const flushStreamRender = (options = {}) => {
+    cancelScheduledStreamRender();
+    return renderStreamNow(options);
+  };
 
   try {
     const response = await fetch('/api/llm/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        ...window.getSshTargetRequestHeaders()
+      },
       body: JSON.stringify({
         messages,
         model: activeModel,
@@ -1030,21 +1354,31 @@ async function handleSendMessage() {
         max_tokens,
         stream: true
       }),
-      signal: abortController.signal
+      signal: requestController.signal
     });
+
+    if (generationSequence !== chatGenerationSequence
+      || generationEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
 
     if (!response.ok) {
       const errJson = await response.json();
+      window.reportSshTargetError(errJson);
       throw new Error(errJson.error || '请求失败');
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
+    let streamFinished = false;
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (generationSequence !== chatGenerationSequence
+        || generationEpoch !== (window.getServerContextEpoch?.() ?? 0)) {
+        await reader.cancel();
+        return;
+      }
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
@@ -1053,7 +1387,10 @@ async function handleSendMessage() {
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith(':')) continue;
-        if (trimmed === 'data: [DONE]') break;
+        if (trimmed === 'data: [DONE]') {
+          streamFinished = true;
+          break;
+        }
 
         if (trimmed.startsWith('data: ')) {
           try {
@@ -1073,39 +1410,17 @@ async function handleSendMessage() {
 
               if (reasoningChunk) thinkingResponse += reasoningChunk;
               if (textChunk) fullResponse += textChunk;
-
-              let renderedHtml = '';
-              if (thinkingResponse) {
-                renderedHtml += `
-                  <details class="chat-thinking-box" open>
-                    <summary>🧠 思考与推理过程</summary>
-                    <div class="chat-thinking-content">${renderMarkdown(thinkingResponse)}</div>
-                  </details>
-                `;
-              }
-              if (fullResponse) {
-                renderedHtml += `<div>${renderMarkdown(fullResponse)}</div>`;
-              }
-
-              contentElement.innerHTML = renderedHtml;
-
-              const elapsedSec = (Date.now() - (firstTokenTime || startTime)) / 1000;
-              if (elapsedSec > 0) {
-                const tps = (tokenCount / elapsedSec).toFixed(1);
-                if (speedBadge) speedBadge.innerText = `⚡ ${tps} tok/s | ${tokenCount} tok`;
-                const tpsEl = document.getElementById('chat-token-speed');
-                if (tpsEl) tpsEl.innerText = `${tps} t/s`;
-              }
-              const countEl = document.getElementById('chat-token-count');
-              if (countEl) countEl.innerText = `${tokenCount} tokens`;
-
-              scrollChatToBottom();
+              scheduleStreamRender();
             }
           } catch (_) {}
         }
       }
+      if (streamFinished) break;
     }
 
+    if (generationSequence !== chatGenerationSequence
+      || generationEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
+    if (!flushStreamRender({ final: true })) return;
     chatHistory.push({ role: 'assistant', content: fullResponse || thinkingResponse });
 
     const totalSec = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -1117,16 +1432,23 @@ async function handleSendMessage() {
     if (tpsEl) tpsEl.innerText = avgTps + ' t/s ' + llmText('(平均)', '(average)');
 
   } catch (err) {
-    if (err.name === 'AbortError') {
-      contentElement.innerHTML += '<div style="color: var(--win-text-muted); font-size: 11px; margin-top: 4px;">[生成已被中止]</div>';
-    } else {
-      contentElement.innerHTML += `<div style="color: var(--perf-red); font-size: 12px; margin-top: 4px;">❌ 发生错误: ${window.escapeHtml(err.message)}</div>`;
-    }
+    if (generationSequence !== chatGenerationSequence
+      || generationEpoch !== (window.getServerContextEpoch?.() ?? 0)
+      || err.name === 'AbortError') return;
+    flushStreamRender({ final: true });
+    if (!isCurrentGeneration()) return;
+    const errorMessage = document.createElement('div');
+    errorMessage.style.cssText = 'color: var(--perf-red); font-size: 12px; margin-top: 4px;';
+    errorMessage.textContent = `❌ 发生错误: ${err.message}`;
+    contentElement.appendChild(errorMessage);
   } finally {
-    isGenerating = false;
-    toggleChatGenerating(false);
-    abortController = null;
-    scrollChatToBottom();
+    cancelScheduledStreamRender();
+    if (generationSequence === chatGenerationSequence) {
+      isGenerating = false;
+      toggleChatGenerating(false);
+      if (abortController === requestController) abortController = null;
+      scrollChatToBottom();
+    }
   }
 }
 
@@ -1392,15 +1714,25 @@ function setupLLMModals() {
 async function loadLLMLogs() {
   const box = document.getElementById('llm-logs-content');
   if (!box) return;
+  const requestSequence = ++llmLogsRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
+  llmLogsAbortController?.abort();
+  const requestController = new AbortController();
+  llmLogsAbortController = requestController;
   box.innerText = '正在读取日志...';
   window.showModal('modal-llm-logs');
 
   try {
-    const res = await window.api.request('/api/llm/logs');
+    const res = await window.api.request('/api/llm/logs', { signal: requestController.signal });
+    if (requestSequence !== llmLogsRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     box.innerText = res.logs || '暂无运行日志';
     box.scrollTop = box.scrollHeight;
   } catch (err) {
+    if (err.name === 'AbortError' || requestSequence !== llmLogsRequestSequence) return;
     box.innerText = `加载日志失败: ${err.message}`;
+  } finally {
+    if (llmLogsAbortController === requestController) llmLogsAbortController = null;
   }
 }
 

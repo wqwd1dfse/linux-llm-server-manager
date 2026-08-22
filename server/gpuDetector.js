@@ -1,16 +1,77 @@
-import { executeCommand } from './sshManager.js';
+import {
+  assertSshTargetContext,
+  captureSshTargetContext,
+  executeCommand,
+  getConnectionStatus
+} from './sshManager.js';
+import { getConfig } from './config.js';
 
-let cachedGpuInfo = null;
-let lastGpuScanTime = 0;
+const gpuCacheByTarget = new Map();
+const gpuScanByTarget = new Map();
+const GPU_CACHE_TTL_MS = 4_000;
+export const GPU_CACHE_MAX_TARGETS = 16;
+
+function pruneGpuDetectionCache(now = Date.now()) {
+  for (const [key, entry] of gpuCacheByTarget) {
+    if (!entry || now - entry.cachedAt >= GPU_CACHE_TTL_MS) gpuCacheByTarget.delete(key);
+  }
+  while (gpuCacheByTarget.size > GPU_CACHE_MAX_TARGETS) {
+    gpuCacheByTarget.delete(gpuCacheByTarget.keys().next().value);
+  }
+}
+
+function cacheGpuDetection(targetKey, data, now = Date.now()) {
+  // Refresh insertion order so the fixed-size map behaves as a small LRU.
+  gpuCacheByTarget.delete(targetKey);
+  gpuCacheByTarget.set(targetKey, { data, cachedAt: now });
+  pruneGpuDetectionCache(now);
+}
+
+export function resolveGpuTargetIdentity(status = getConnectionStatus(), config = getConfig()) {
+  const username = String(config.username || 'root');
+  const host = String(config.host || '127.0.0.1');
+  const port = Number(config.port || 22);
+  const label = `${username}@${host}:${port}`;
+  if (status?.connected && status.host && status.host !== label) {
+    const error = new Error('SSH target is changing; GPU data is temporarily unavailable');
+    error.code = 'SSH_TARGET_CHANGING';
+    throw error;
+  }
+  return { key: JSON.stringify([username, host, port]), label };
+}
+
+export function resetGpuDetectionCache(targetKey = null) {
+  if (targetKey === null) {
+    gpuCacheByTarget.clear();
+    gpuScanByTarget.clear();
+    return;
+  }
+  gpuCacheByTarget.delete(targetKey);
+  gpuScanByTarget.delete(targetKey);
+}
 
 /**
  * Dynamically detect all GPUs on the target server (AMD, NVIDIA, Intel, etc.)
  */
-export async function detectGpus(forceRefresh = false) {
+export async function detectGpus(forceRefresh = false, dependencies = {}) {
+  const runCommand = dependencies.executeCommand || executeCommand;
+  const readStatus = dependencies.getConnectionStatus || getConnectionStatus;
+  const readConfig = dependencies.getConfig || getConfig;
+  const captureTargetContext = dependencies.captureSshTargetContext || captureSshTargetContext;
+  const assertTargetContext = dependencies.assertSshTargetContext || assertSshTargetContext;
+  const targetContext = captureTargetContext();
+  const target = resolveGpuTargetIdentity(readStatus(), readConfig());
   const now = Date.now();
-  if (!forceRefresh && cachedGpuInfo && now - lastGpuScanTime < 4000) {
-    return cachedGpuInfo;
+  pruneGpuDetectionCache(now);
+  const cached = gpuCacheByTarget.get(target.key);
+  if (!forceRefresh && cached && now - cached.cachedAt < GPU_CACHE_TTL_MS) {
+    gpuCacheByTarget.delete(target.key);
+    gpuCacheByTarget.set(target.key, cached);
+    return cached.data;
   }
+
+  const inFlight = gpuScanByTarget.get(target.key);
+  if (inFlight) return inFlight;
 
   const script = `
 import os, glob, json, subprocess, re
@@ -200,29 +261,51 @@ if not gpus and pci_map:
 print(json.dumps(gpus))
 `;
 
-  try {
-    const result = await executeCommand('python3', ['-c', script], { timeoutMs: 6000 });
-    if (result.stdout) {
-      const gpus = JSON.parse(result.stdout.trim());
-      cachedGpuInfo = {
-        count: gpus.length,
-        primary: gpus[0] || null,
-        gpus,
-        hasMultiGpu: gpus.length > 1
-      };
-      lastGpuScanTime = now;
-      return cachedGpuInfo;
+  const scanPromise = (async () => {
+    try {
+      const result = await runCommand('python3', ['-c', script], {
+        timeoutMs: 6000,
+        expectedTargetContext: targetContext
+      });
+      assertTargetContext(targetContext);
+      const currentTarget = resolveGpuTargetIdentity(readStatus(), readConfig());
+      if (currentTarget.key !== target.key) {
+        const error = new Error('SSH target changed while GPU detection was running');
+        error.code = 'SSH_TARGET_CHANGED';
+        throw error;
+      }
+      if (result.stdout) {
+        const gpus = JSON.parse(result.stdout.trim());
+        const data = {
+          count: gpus.length,
+          primary: gpus[0] || null,
+          gpus,
+          hasMultiGpu: gpus.length > 1,
+          target: target.label
+        };
+        cacheGpuDetection(target.key, data);
+        return data;
+      }
+    } catch (err) {
+      console.error('[GPU Detector] Error probing GPUs:', err.message);
     }
-  } catch (err) {
-    console.error('[GPU Detector] Error probing GPUs:', err.message);
-  }
 
-  // Return truthful empty response if detection failed
-  return {
-    count: 0,
-    primary: null,
-    gpus: [],
-    hasMultiGpu: false,
-    status: 'unavailable'
-  };
+    // Return truthful empty response if detection failed; never substitute a
+    // cached result from a different SSH target.
+    return {
+      count: 0,
+      primary: null,
+      gpus: [],
+      hasMultiGpu: false,
+      status: 'unavailable',
+      target: target.label
+    };
+  })();
+
+  gpuScanByTarget.set(target.key, scanPromise);
+  try {
+    return await scanPromise;
+  } finally {
+    if (gpuScanByTarget.get(target.key) === scanPromise) gpuScanByTarget.delete(target.key);
+  }
 }

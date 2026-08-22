@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {
   hashPassword,
   verifyPassword,
+  verifyPasswordAsync,
   createSession,
   getSession,
   destroySession,
+  onSessionInvalidated,
   signCookie,
   unsignCookie,
   parseCookies,
@@ -25,6 +27,16 @@ test('Auth: Password hashing with PBKDF2 salt (>= 220000 iterations)', () => {
 
   assert.equal(verifyPassword('MySecretPass123!', record), true);
   assert.equal(verifyPassword('WrongPass', record), false);
+});
+
+test('Auth: request-path PBKDF2 verification is asynchronous', async () => {
+  const record = hashPassword('AsyncSecretPass123!');
+  let immediateRan = false;
+  const verification = verifyPasswordAsync('AsyncSecretPass123!', record);
+  setImmediate(() => { immediateRan = true; });
+  assert.equal(await verification, true);
+  assert.equal(immediateRan, true);
+  assert.equal(await verifyPasswordAsync('WrongPass', record), false);
 });
 
 test('Auth: Cookie signing and unsigning with HMAC-SHA256', () => {
@@ -57,6 +69,18 @@ test('Auth: Session lifecycle and expiry', () => {
 
   destroySession(token);
   assert.equal(getSession(token), null);
+});
+
+test('Auth: destroying a session notifies live transports exactly once', () => {
+  const invalidated = [];
+  const unsubscribe = onSessionInvalidated((token) => invalidated.push(token));
+  const token = createSession({ username: 'admin' });
+
+  destroySession(token);
+  destroySession(token);
+  unsubscribe();
+
+  assert.deepEqual(invalidated, [token]);
 });
 
 test('Auth: Rate limiting brute-force defense', () => {

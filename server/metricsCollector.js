@@ -1,4 +1,9 @@
-import { executeCommand, getConnectionStatus } from './sshManager.js';
+import {
+  assertSshTargetContext,
+  captureSshTargetContext,
+  executeCommand,
+  getConnectionStatus
+} from './sshManager.js';
 import { getConfig } from './config.js';
 export const METRICS_SHELL = 'bash';
 
@@ -243,27 +248,41 @@ export function parseGpuDevices(lines = []) {
   return { type, hasGpu: devices.length > 0, devices };
 }
 
-class MetricsCollector {
-  constructor() {
+export class MetricsCollector {
+  constructor({
+    executeCommandFn = executeCommand,
+    getConnectionStatusFn = getConnectionStatus,
+    captureTargetContextFn = captureSshTargetContext,
+    assertTargetContextFn = assertSshTargetContext
+  } = {}) {
+    this.executeCommand = executeCommandFn;
+    this.getConnectionStatus = getConnectionStatusFn;
+    this.captureTargetContext = captureTargetContextFn;
+    this.assertTargetContext = assertTargetContextFn;
     this.latestSnapshot = null;
     this.history = [];
     this.historyRetentionMs = 60 * 60 * 1000;
     this.maxHistoryLength = 7200; // 60 minutes at the minimum supported 500 ms interval
     this.isCollecting = false;
     this.timer = null;
+    this.running = false;
     this.listeners = new Set();
     this.lastNetStats = { time: 0, rx: 0, tx: 0 };
     this.lastDiskStats = { time: 0, readBytes: 0, writeBytes: 0 };
     this.lastCpuStats = { time: 0, idle: 0, total: 0 };
     this.currentHost = null;
+    this.currentTargetGeneration = null;
+    this.activeTargetContext = null;
   }
 
-  start() {
-    if (this.timer) return;
-    this.scheduleNext(100);
+  start(initialDelayMs = 100) {
+    if (this.running) return;
+    this.running = true;
+    this.scheduleNext(initialDelayMs);
   }
 
   stop() {
+    this.running = false;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -271,9 +290,11 @@ class MetricsCollector {
   }
 
   scheduleNext(delayMs = null) {
+    if (!this.running) return;
     if (this.timer) clearTimeout(this.timer);
     const interval = delayMs !== null ? delayMs : (getConfig().metricsInterval || 2000);
     this.timer = setTimeout(async () => {
+      this.timer = null;
       try {
         await this.collect();
       } catch (err) {
@@ -284,9 +305,10 @@ class MetricsCollector {
           console.error('[MetricsCollector] Unexpected collection error:', msg);
         }
       } finally {
-        this.scheduleNext();
+        if (this.running) this.scheduleNext();
       }
     }, interval);
+    this.timer.unref?.();
   }
 
   addListener(fn) {
@@ -353,8 +375,9 @@ class MetricsCollector {
     }
   }
 
-  resetRollingState(host = null) {
+  resetRollingState(host = null, generation = null) {
     this.currentHost = host;
+    this.currentTargetGeneration = generation;
     this.latestSnapshot = null;
     this.history = [];
     this.lastNetStats = { time: 0, rx: 0, tx: 0 };
@@ -362,19 +385,86 @@ class MetricsCollector {
     this.lastCpuStats = { time: 0, idle: 0, total: 0 };
   }
 
-  async collect() {
-    if (this.isCollecting) return this.latestSnapshot;
+  notifyListeners(snapshot) {
+    for (const listener of this.listeners) {
+      try { listener(snapshot); } catch (_) {}
+    }
+  }
 
-    const status = getConnectionStatus();
+  clearDisconnectedSnapshot() {
+    const hadSnapshot = this.latestSnapshot !== null;
+    this.latestSnapshot = null;
+    // An unexpected transport loss does not advance sshManager's generation.
+    // Force a rolling-state reset if this host reconnects under a new session.
+    this.currentTargetGeneration = null;
+    if (hadSnapshot) this.notifyListeners(null);
+  }
+
+  targetContextsMatch(left, right) {
+    return Boolean(left && right)
+      && left.generation === right.generation
+      && left.targetId === right.targetId;
+  }
+
+  isCollectionTargetCurrent(targetContext, host) {
+    try {
+      this.assertTargetContext(targetContext);
+    } catch (error) {
+      if (error?.code === 'SSH_TARGET_CHANGED') return false;
+      throw error;
+    }
+
+    const status = this.getConnectionStatus();
+    return status.connected === true && status.host === host;
+  }
+
+  invalidateStaleCollection() {
+    const status = this.getConnectionStatus();
     if (!status.connected) {
+      this.clearDisconnectedSnapshot();
+      return;
+    }
+
+    const currentContext = this.captureTargetContext();
+    const host = currentContext.targetId || status.host;
+    const hadSnapshot = this.latestSnapshot !== null;
+    if (this.currentHost !== host || this.currentTargetGeneration !== currentContext.generation) {
+      this.resetRollingState(host, currentContext.generation);
+    } else {
       this.latestSnapshot = null;
+    }
+    if (hadSnapshot) this.notifyListeners(null);
+  }
+
+  async collect() {
+    const status = this.getConnectionStatus();
+    if (!status.connected) {
+      this.clearDisconnectedSnapshot();
       return null;
     }
 
-    if (this.currentHost !== status.host) {
-      this.resetRollingState(status.host);
+    const targetContext = this.captureTargetContext();
+    const targetHost = targetContext.targetId || status.host;
+    if (targetHost !== status.host) {
+      this.invalidateStaleCollection();
+      return null;
+    }
+
+    if (this.isCollecting) {
+      if (!this.targetContextsMatch(this.activeTargetContext, targetContext)) {
+        if (this.currentHost !== targetHost || this.currentTargetGeneration !== targetContext.generation) {
+          this.resetRollingState(targetHost, targetContext.generation);
+        }
+        return null;
+      }
+      return this.latestSnapshot;
+    }
+
+    if (this.currentHost !== targetHost || this.currentTargetGeneration !== targetContext.generation) {
+      this.resetRollingState(targetHost, targetContext.generation);
     }
     this.isCollecting = true;
+    this.activeTargetContext = targetContext;
     try {
       const script = `
         echo "---SYSINFO---"
@@ -476,7 +566,17 @@ class MetricsCollector {
         ps -eo pid,user,%cpu,%mem,comm --sort=-%cpu | head -n 10
       `;
 
-      const result = await executeCommand(METRICS_SHELL, ['-c', script], { timeoutMs: 8000 });
+      const result = await this.executeCommand(METRICS_SHELL, ['-c', script], {
+        timeoutMs: 8000,
+        expectedTargetContext: targetContext
+      });
+      this.assertTargetContext(targetContext);
+      const completionStatus = this.getConnectionStatus();
+      if (!completionStatus.connected || completionStatus.host !== targetHost) {
+        const error = new Error('Target server changed while metrics collection was pending');
+        error.code = 'SSH_TARGET_CHANGED';
+        throw error;
+      }
       if (!result.success && !result.stdout) {
         throw new Error(result.stderr || '指标采集命令执行失败');
       }
@@ -508,15 +608,18 @@ class MetricsCollector {
       }
 
       // Notify listeners (WebSockets)
-      for (const listener of this.listeners) {
-        try {
-          listener(parsed);
-        } catch (_) {}
-      }
+      this.notifyListeners(parsed);
 
       return parsed;
+    } catch (error) {
+      if (error?.code === 'SSH_TARGET_CHANGED' || !this.isCollectionTargetCurrent(targetContext, targetHost)) {
+        this.invalidateStaleCollection();
+        return null;
+      }
+      throw error;
     } finally {
       this.isCollecting = false;
+      this.activeTargetContext = null;
     }
   }
 

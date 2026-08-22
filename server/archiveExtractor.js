@@ -37,6 +37,7 @@ export async function extractArchiveSafely(filePath, targetDir) {
   const script = String.raw`
 import os
 import pathlib
+import tempfile
 import sys
 import tarfile
 import zipfile
@@ -47,7 +48,9 @@ max_bytes = int(max_bytes_raw)
 destination_real = os.path.realpath(destination)
 os.makedirs(destination_real, exist_ok=True)
 
-def validate_name(name):
+actual_bytes = 0
+
+def validated_target(name):
     if not isinstance(name, str) or not name or '\x00' in name:
         raise ValueError('archive contains an invalid empty or null-byte path')
     normalized = name.replace('\\', '/')
@@ -57,6 +60,7 @@ def validate_name(name):
     target = os.path.realpath(os.path.join(destination_real, *pure.parts))
     if os.path.commonpath([destination_real, target]) != destination_real:
         raise ValueError('archive path escapes the destination: ' + name)
+    return target
 
 def enforce_limits(entries, total_bytes):
     if entries > max_entries:
@@ -64,30 +68,83 @@ def enforce_limits(entries, total_bytes):
     if total_bytes > max_bytes:
         raise ValueError('archive expands beyond the configured size limit')
 
+def ensure_directory(target):
+    os.makedirs(target, exist_ok=True)
+    resolved = os.path.realpath(target)
+    if os.path.commonpath([destination_real, resolved]) != destination_real:
+        raise ValueError('archive directory escapes the destination: ' + target)
+
+def write_stream(source, target, mode=0o644):
+    global actual_bytes
+    parent = os.path.dirname(target)
+    ensure_directory(parent)
+    parent_real = os.path.realpath(parent)
+    if os.path.commonpath([destination_real, parent_real]) != destination_real:
+        raise ValueError('archive file parent escapes the destination: ' + target)
+
+    fd, temporary = tempfile.mkstemp(prefix='.server-manager-extract-', dir=parent_real)
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                actual_bytes += len(chunk)
+                if actual_bytes > max_bytes:
+                    raise ValueError('archive expands beyond the configured size limit while extracting')
+                output.write(chunk)
+        os.chmod(temporary, mode & 0o777 or 0o644)
+        os.replace(temporary, target)
+        temporary = None
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
 lower = archive_path.lower()
 if lower.endswith('.zip'):
     with zipfile.ZipFile(archive_path) as archive:
         entries = archive.infolist()
         total = 0
         for entry in entries:
-            validate_name(entry.filename)
-            mode = (entry.external_attr >> 16) & 0o170000
-            if mode == 0o120000:
-                raise ValueError('archive symbolic links are not allowed: ' + entry.filename)
+            validated_target(entry.filename)
+            raw_mode = (entry.external_attr >> 16)
+            file_type = raw_mode & 0o170000
+            if file_type not in (0, 0o040000, 0o100000):
+                raise ValueError('archive links and special files are not allowed: ' + entry.filename)
             total += max(0, entry.file_size)
             enforce_limits(len(entries), total)
-        archive.extractall(destination_real)
+        for entry in entries:
+            target = validated_target(entry.filename)
+            if entry.is_dir():
+                ensure_directory(target)
+                continue
+            with archive.open(entry, 'r') as source:
+                write_stream(source, target, (entry.external_attr >> 16) & 0o777)
 else:
     with tarfile.open(archive_path, mode='r:*') as archive:
         entries = archive.getmembers()
         total = 0
         for entry in entries:
-            validate_name(entry.name)
+            validated_target(entry.name)
             if entry.issym() or entry.islnk() or entry.isdev() or entry.isfifo():
                 raise ValueError('archive links and special files are not allowed: ' + entry.name)
+            if not entry.isdir() and not entry.isfile():
+                raise ValueError('archive contains an unsupported entry type: ' + entry.name)
             total += max(0, entry.size)
             enforce_limits(len(entries), total)
-        archive.extractall(destination_real, members=entries)
+        for entry in entries:
+            target = validated_target(entry.name)
+            if entry.isdir():
+                ensure_directory(target)
+                continue
+            source = archive.extractfile(entry)
+            if source is None:
+                raise ValueError('archive file could not be read: ' + entry.name)
+            with source:
+                write_stream(source, target, entry.mode)
 
 print('EXTRACTED')
 `.trim();

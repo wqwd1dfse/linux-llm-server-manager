@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -8,6 +9,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 import { parseCookies, verifyPassword } from '../server/auth.js';
+import { loadAuthRecord } from '../server/authStore.js';
 import { getConfig, saveConfig } from '../server/config.js';
 import { writeJsonAtomic } from '../server/atomicFile.js';
 import { isSupportedArchivePath } from '../server/archiveExtractor.js';
@@ -174,6 +176,77 @@ test('Metrics history retains accurate full-range stats while sampling endpoints
   assert.equal(history.stats.fanRpm.current, 1500);
 });
 
+test('Metrics WebSocket initial collection relies on the central broadcast exactly once', () => {
+  const source = fs.readFileSync(path.join(projectRoot, 'server', 'ws', 'metrics.js'), 'utf8');
+  const immediateBlock = source.slice(source.indexOf('function sendImmediateSnapshot'));
+  assert.match(immediateBlock, /metricsCollector\.collect\(\)\s*\n\s*\.catch/);
+  assert.doesNotMatch(immediateBlock, /\.then\(\(data\)/);
+});
+
+test('Authentication refuses public example or undersized environment credentials', (t) => {
+  const directory = withTempDirectory(t, 'llm-manager-auth-env-');
+  const previousPath = process.env.AUTH_FILE_PATH;
+  const previousPassword = process.env.ADMIN_PASSWORD;
+  const previousUsername = process.env.ADMIN_USERNAME;
+  process.env.AUTH_FILE_PATH = path.join(directory, 'auth.json');
+  process.env.ADMIN_USERNAME = 'admin';
+
+  t.after(() => {
+    if (previousPath === undefined) delete process.env.AUTH_FILE_PATH;
+    else process.env.AUTH_FILE_PATH = previousPath;
+    if (previousPassword === undefined) delete process.env.ADMIN_PASSWORD;
+    else process.env.ADMIN_PASSWORD = previousPassword;
+    if (previousUsername === undefined) delete process.env.ADMIN_USERNAME;
+    else process.env.ADMIN_USERNAME = previousUsername;
+  });
+
+  process.env.ADMIN_PASSWORD = 'your_secure_admin_password_here';
+  assert.equal(loadAuthRecord(), null);
+  assert.equal(fs.existsSync(process.env.AUTH_FILE_PATH), false);
+
+  process.env.ADMIN_PASSWORD = 'too-short';
+  assert.equal(loadAuthRecord(), null);
+  assert.equal(fs.existsSync(process.env.AUTH_FILE_PATH), false);
+});
+
+test('Authentication refuses weak configured session-signing secrets at startup', () => {
+  for (const secret of [
+    'too-short',
+    'replace_with_a_long_random_secret',
+    'change_this_to_a_random_long_string_in_production'
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      ['--input-type=module', '--eval', "import './server/auth.js'"],
+      {
+        cwd: projectRoot,
+        env: { ...process.env, SESSION_SECRET: secret },
+        encoding: 'utf8'
+      }
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /SESSION_SECRET/);
+  }
+});
+
+test('Archive extraction enforces the actual streamed byte limit without extractall', () => {
+  const source = fs.readFileSync(path.join(projectRoot, 'server', 'archiveExtractor.js'), 'utf8');
+  assert.match(source, /actual_bytes \+= len\(chunk\)/);
+  assert.match(source, /actual_bytes > max_bytes/);
+  assert.match(source, /tempfile\.mkstemp/);
+  assert.match(source, /os\.replace\(temporary, target\)/);
+  assert.doesNotMatch(source, /\.extractall\(/);
+});
+
+test('File mutations guard core directories and reject dot archive names', () => {
+  const source = fs.readFileSync(path.join(projectRoot, 'server', 'routes', 'files.js'), 'utf8');
+  assert.match(source, /assertNotProtectedTopLevelSystemPath\(req\.body\.source, '移动'\)/);
+  assert.match(source, /assertNotProtectedTopLevelSystemPath\(req\.body\.oldPath, '重命名'\)/);
+  assert.match(source, /assertNotProtectedTopLevelSystemPath\(req\.body\.newPath, '重命名为新路径'\)/);
+  assert.match(source, /assertNotProtectedTopLevelSystemPath\(req\.body\.path, '修改权限'\)/);
+  assert.match(source, /archiveName === '\.' \|\| archiveName === '\.\.'/);
+});
+
 test('Security headers require an exact same-host origin and trusted HTTPS state', () => {
   const apply = (req) => {
     const headers = {};
@@ -233,11 +306,15 @@ test('Markdown renderer escapes exactly once and keeps code blocks isolated from
 test('HTTP layer returns structured 400 and authenticated 404 responses', async (t) => {
   const directory = withTempDirectory(t, 'llm-manager-http-errors-');
   const previousAuthPath = process.env.AUTH_FILE_PATH;
+  const previousAdminPassword = process.env.ADMIN_PASSWORD;
   process.env.AUTH_FILE_PATH = path.join(directory, 'auth.json');
+  delete process.env.ADMIN_PASSWORD;
   process.env.AUTO_CONNECT = 'false';
   t.after(() => {
     if (previousAuthPath === undefined) delete process.env.AUTH_FILE_PATH;
     else process.env.AUTH_FILE_PATH = previousAuthPath;
+    if (previousAdminPassword === undefined) delete process.env.ADMIN_PASSWORD;
+    else process.env.ADMIN_PASSWORD = previousAdminPassword;
   });
 
   const { server } = await import('../server/index.js');
@@ -284,7 +361,11 @@ test('HTTP layer returns structured 400 and authenticated 404 responses', async 
     'Content-Length': Buffer.byteLength(setupBody)
   });
   const cookie = setup.headers['set-cookie'][0].split(';')[0];
-  const missing = await request('GET', '/api/not-a-real-endpoint', null, { Cookie: cookie });
+  const status = await request('GET', '/api/auth/status', null, { Cookie: cookie });
+  const missing = await request('GET', '/api/not-a-real-endpoint', null, {
+    Cookie: cookie,
+    'X-SSH-Target-Epoch': status.body.status.targetEpoch
+  });
   assert.equal(missing.status, 404);
   assert.equal(missing.body.error, 'API endpoint not found');
 });
@@ -303,9 +384,19 @@ test('Remote operations validate and stop in safe side-effect order', () => {
   assert.ok(startBlock.indexOf('stopManagedLlamaServer') < startBlock.indexOf('launchLlamaServer'));
 
   const taskBlock = llmRoute.slice(llmRoute.indexOf("router.get('/hf/tasks'"), llmRoute.indexOf('// Cancel a download task'));
-  assert.ok(taskBlock.indexOf('pruneDownloadTasks()') < taskBlock.indexOf('for (const [id, task]'));
-  assert.match(taskBlock, /if \(!isProcAlive\)[\s\S]*?task\.finishedAt = Date\.now\(\)/);
-  assert.doesNotMatch(taskBlock, /status !== 'completed'[\s\S]*?finishedAt/);
+  const pruneIndex = taskBlock.indexOf('pruneDownloadTasks()');
+  const currentTargetTasksIndex = taskBlock.indexOf('const tasks = downloadTasksByTarget.get(target.key)');
+  const taskLoopIndex = taskBlock.indexOf('for (const [, task] of tasks.entries())');
+  assert.ok(pruneIndex >= 0);
+  assert.ok(pruneIndex < currentTargetTasksIndex);
+  assert.ok(currentTargetTasksIndex < taskLoopIndex);
+  assert.match(taskBlock, /await refreshDownloadTask\(task, target\.key\)/);
+  assert.match(llmRoute, /if \(inspection\.status === 'completed' \|\| inspection\.status === 'error'\)[\s\S]*?task\.finishedAt = now/);
+  assert.match(llmRoute, /const downloadTaskReaper = new DownloadTaskReaper\([\s\S]*?runWithSshTargetContext\(freshContext/);
+
+  const cancelBlock = llmRoute.slice(llmRoute.indexOf("router.post('/hf/tasks/:id/cancel'"), llmRoute.indexOf('// 5. Start LLM'));
+  assert.ok(cancelBlock.indexOf('const task = tasks.get(id)') < cancelBlock.indexOf('settleCanceledDownloadTask(task, target.key)'));
+  assert.match(cancelBlock, /if \(foreignTask\)[\s\S]*?res\.status\(409\)/);
 
   const restartBlock = llmRoute.slice(llmRoute.indexOf("router.post('/restart'"), llmRoute.indexOf('// Get LLM Logs'));
   assert.ok(restartBlock.indexOf('activeInstance.pid = runResult.pid') < restartBlock.indexOf('activeInstance.launchedAt'));

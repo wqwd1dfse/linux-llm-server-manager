@@ -141,5 +141,11 @@ export function getSafeConfig() {
 }
 
 export function updateHfToken(token) {
-  saveConfig({ hfToken: (token || '').trim() });
+  const activeRuntimeOverride = runtimeSshOverride ? { ...runtimeSshOverride } : null;
+  try {
+    saveConfig({ hfToken: (token || '').trim() });
+  } finally {
+    if (activeRuntimeOverride) runtimeSshOverride = activeRuntimeOverride;
+  }
+  return getConfig();
 }

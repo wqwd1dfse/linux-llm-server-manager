@@ -1,5 +1,8 @@
 // Services & Processes Management
 
+let processesRequestSequence = 0;
+let systemdRequestSequence = 0;
+
 window.initServices = function () {
   loadProcesses();
   loadSystemdServices();
@@ -8,13 +11,27 @@ window.initServices = function () {
   document.getElementById('btn-refresh-systemd')?.addEventListener('click', loadSystemdServices);
 };
 
+window.loadProcesses = loadProcesses;
+
+window.addEventListener('servercontextchange', () => {
+  processesRequestSequence += 1;
+  systemdRequestSequence += 1;
+  document.getElementById('process-table-body')?.replaceChildren();
+  document.getElementById('systemd-table-body')?.replaceChildren();
+  queueMicrotask(() => Promise.allSettled([loadProcesses(), loadSystemdServices()]));
+});
+
 async function loadProcesses() {
   const tbody = document.getElementById('process-table-body');
   if (!tbody) return;
+  const requestSequence = ++processesRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
   tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--win-text-muted);">正在获取进程...</td></tr>';
 
   try {
     const res = await window.api.request('/api/services/processes?limit=50');
+    if (requestSequence !== processesRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     if (!res.processes || res.processes.length === 0) {
       tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--win-text-muted); padding: 30px;">无活跃进程</td></tr>';
       return;
@@ -70,6 +87,7 @@ async function loadProcesses() {
       tbody.appendChild(tr);
     }
   } catch (err) {
+    if (requestSequence !== processesRequestSequence) return;
     tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--perf-red); padding: 30px;">获取进程失败: ${window.escapeHtml(err.message)}</td></tr>`;
   }
 }
@@ -90,10 +108,14 @@ async function killProcess(pid) {
 async function loadSystemdServices() {
   const tbody = document.getElementById('systemd-table-body');
   if (!tbody) return;
+  const requestSequence = ++systemdRequestSequence;
+  const requestEpoch = window.getServerContextEpoch?.() ?? 0;
   tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--win-text-muted);">正在获取 Systemd 服务...</td></tr>';
 
   try {
     const res = await window.api.request('/api/services/systemd');
+    if (requestSequence !== systemdRequestSequence
+      || requestEpoch !== (window.getServerContextEpoch?.() ?? 0)) return;
     if (!res.services || res.services.length === 0) {
       tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--win-text-muted); padding: 30px;">未发现服务</td></tr>';
       return;
@@ -160,6 +182,7 @@ async function loadSystemdServices() {
       tbody.appendChild(tr);
     }
   } catch (err) {
+    if (requestSequence !== systemdRequestSequence) return;
     tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--perf-red); padding: 30px;">获取系统服务失败: ${window.escapeHtml(err.message)}</td></tr>`;
   }
 }
