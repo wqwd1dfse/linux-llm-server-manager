@@ -52,6 +52,19 @@ test('MetricsCollector: detects a GPU from DRM or PCI sysfs without vendor utili
   assert.equal(gpu.devices[0].utilizationGpu, 37);
 });
 
+test('MetricsCollector: normalizes ambiguous Vega 20 inventory using measured VRAM and power', () => {
+  const gpu = parseGpuDevices([
+    'DRM_GPU:card0|0000:06:00.0|0x1002|0x66a1|amdgpu 6.12.95+deb13-amd64|0|12103680|17163091968|37000|17000000|VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Vega 20 [Radeon Pro VII/Radeon Instinct MI50 32GB] (rev 06)'
+  ]);
+
+  assert.equal(gpu.hasGpu, true);
+  assert.equal(gpu.devices[0].name, 'AMD Vega 20 (16 GB VRAM)');
+  assert.equal(gpu.devices[0].memoryUsedMb, 12);
+  assert.equal(gpu.devices[0].memoryTotalMb, 16368);
+  assert.equal(gpu.devices[0].powerDraw, '17.0 W');
+  assert.equal(gpu.devices[0].driverVersion, 'amdgpu 6.12.95+deb13-amd64 (Linux DRM)');
+});
+
 test('MetricsCollector: NVIDIA telemetry wins over duplicate DRM inventory', () => {
   const gpu = parseGpuDevices([
     'NVIDIA_CSV:0, 00000000:01:00.0, NVIDIA RTX 4090, 555.42, 61, 92, 18, 24564, 12000, 12564, 320.5',

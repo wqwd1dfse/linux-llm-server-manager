@@ -4,6 +4,18 @@ let metricsWs = null;
 let latestMetricsData = null;
 const dashboardText = (zh, en) => window.localize ? window.localize(zh, en) : en;
 
+function formatDashboardUptime(seconds, fallback = '') {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return fallback;
+
+  const days = Math.floor(value / 86400);
+  const hours = Math.floor((value % 86400) / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  if (days > 0) return dashboardText(`${days}天 ${hours}小时 ${minutes}分`, `${days}d ${hours}h ${minutes}m`);
+  if (hours > 0) return dashboardText(`${hours}小时 ${minutes}分`, `${hours}h ${minutes}m`);
+  return dashboardText(`${minutes}分钟`, `${minutes}m`);
+}
+
 function formatBytes(bytes, decimals = 1) {
   if (!bytes || bytes === 0) return '0 B';
   const k = 1024;
@@ -65,7 +77,8 @@ function connectMetricsWs() {
 function updateMonitorsUI(data) {
   if (!data) return;
   latestMetricsData = data;
-  window.updateConnectionStatus(true, data.os?.uptimeFormatted);
+  const uptimeText = formatDashboardUptime(data.os?.uptimeSeconds, data.os?.uptimeFormatted);
+  window.updateConnectionStatus(true, uptimeText);
 
   // 1. CPU Detailed Monitor
   const cpuPercent = data.cpu?.usagePercent !== undefined ? data.cpu.usagePercent : 0;
@@ -295,8 +308,8 @@ function updateMonitorsUI(data) {
   setText('statusbar-cpu', `CPU: ${cpuPercent}%`);
   setText('statusbar-ram', `RAM: ${memPercent}% (${formatBytes(data.memory?.used)})`);
   setText('statusbar-net', `Net: ↓ ${formatSpeed(data.network?.rxSpeed || 0)} ↑ ${formatSpeed(data.network?.txSpeed || 0)}`);
-  if (data.os?.uptimeFormatted) {
-    setText('statusbar-uptime', dashboardText('开机: ', 'Uptime: ') + data.os.uptimeFormatted);
+  if (uptimeText) {
+    setText('statusbar-uptime', dashboardText('开机: ', 'Uptime: ') + uptimeText);
   }
 }
 

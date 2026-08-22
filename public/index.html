@@ -751,7 +751,7 @@
               <div style="font-size: 11px; color: var(--win-text-secondary); margin-top: 2px;" id="fan-cpu-status">CPU 风扇: --% PWM | 封装: --°C</div>
             </div>
             <div style="text-align: right;">
-              <div style="font-size: 12px; color: var(--win-text-secondary);">温控状态与策略</div>
+              <div style="font-size: 12px; color: var(--win-text-secondary);" data-i18n="fan.service_status">温控状态与策略</div>
               <div id="fan-service-badge" style="font-weight: 600; font-size: 13px;">检测中...</div>
               <div style="display: flex; gap: 6px; margin-top: 6px; justify-content: flex-end;">
                 <button class="cmd-btn btn-sm" id="btn-fan-service-restart" data-action="control-fan-service" data-service-action="restart">🔄 重启温控服务</button>
@@ -765,16 +765,16 @@
           <div class="perf-card" style="margin-bottom: 12px;">
             <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;">
               <div style="display: flex; align-items: center; gap: 10px;">
-                <div class="perf-card-title" style="margin-bottom: 0;">📈 温度与功耗实时历史曲线</div>
+                <div class="perf-card-title" style="margin-bottom: 0;" data-i18n="fan.curves_title">📈 温度与功耗实时历史曲线</div>
                 <div style="display: flex; gap: 4px;">
                   <button class="hf-tag-btn fan-range-btn active" data-range="5m">⏱️ 5 分钟</button>
                   <button class="hf-tag-btn fan-range-btn" data-range="30m">⏱️ 30 分钟</button>
                   <button class="hf-tag-btn fan-range-btn" data-range="60m">⏱️ 60 分钟</button>
                 </div>
-                <button class="cmd-btn btn-sm" data-action="export-fan-chart" title="将当前温度与能耗曲线保存为高清 PNG 图片" style="font-size: 11px; padding: 2px 8px;">
+                <button class="cmd-btn btn-sm" data-action="export-fan-chart" title="将当前温度与能耗曲线保存为高清 PNG 图片" style="font-size: 11px; padding: 2px 8px;" data-i18n="fan.export_chart">
                   📸 导出图表
                 </button>
-                <span class="titlebar-host-badge" style="font-size: 10px; color: var(--perf-green); background: rgba(16, 185, 129, 0.1);">● 实时采样</span>
+                <span class="titlebar-host-badge" style="font-size: 10px; color: var(--perf-green); background: rgba(16, 185, 129, 0.1);" data-i18n="fan.sample_rate">● 实时采样</span>
               </div>
 
               <!-- Interactive Legend Pills with Toggle & Dynamic Readouts -->
@@ -839,7 +839,7 @@
             <div style="display: flex; flex-direction: column; gap: 12px;">
               <!-- Fan Matrix readouts -->
               <div class="perf-card">
-                <div class="perf-card-title">🌪️ 全机风扇转速与实时 PWM 占空比</div>
+                <div class="perf-card-title" data-i18n="fan.matrix_title">🌪️ 全机风扇转速与实时 PWM 占空比</div>
 
                 <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 8px;">
                   <!-- External Fan -->
@@ -890,7 +890,7 @@
 
               <!-- Presets -->
               <div class="perf-card">
-                <div class="perf-card-title" data-i18n="fan.service_status">⚡ 一键全机温控模式预设</div>
+                <div class="perf-card-title" data-i18n="fan.presets_title">⚡ 一键全机温控模式预设</div>
                 <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 4px;">
                   <button class="cmd-btn" id="btn-fan-mode-full" data-action="set-fan-mode" data-mode="full" style="padding: 10px 6px; flex-direction: column; gap: 4px; text-align: center; cursor: pointer;">
                     <span style="font-size: 18px;">❄️</span>

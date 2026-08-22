@@ -85,10 +85,6 @@ if not gpus:
                     break
 
             card_name = card_name.replace('Advanced Micro Devices, Inc.', '').strip()
-            is_known_32gb_gpu = 'MI50' in desc or 'Vega 20' in desc or 'Pro VII' in desc
-            if is_known_32gb_gpu:
-                card_name = 'AMD GPU 32GB'
-                vendor = 'AMD'
 
             temp_edge = None
             temp_junction = None
@@ -123,8 +119,8 @@ if not gpus:
                 except Exception:
                     pass
 
-            vram_total = '32.0 GB' if is_known_32gb_gpu else '未知'
-            vram_total_bytes = 32 * 1024 * 1024 * 1024 if is_known_32gb_gpu else 0
+            vram_total = '未知'
+            vram_total_bytes = 0
             vram_used = '--'
 
             vram_used_file = os.path.join(device_link, 'mem_info_vram_used')
@@ -142,6 +138,15 @@ if not gpus:
                         vram_used = f'{used_bytes / (1024**3):.1f} GB'
                 except Exception: pass
 
+            # Vega 20's shared PCI ID description can list both Radeon Pro VII
+            # and MI50 32GB even when the board reports 16GB. Do not guess the
+            # commercial SKU; identify the silicon plus measured VRAM instead.
+            if vendor == 'AMD' and re.search(r'Vega\\s*20', desc, re.I):
+                size_gib = round(vram_total_bytes / (1024**3)) if vram_total_bytes > 0 else 0
+                card_name = f'AMD Vega 20 ({size_gib} GB VRAM)' if size_gib else 'AMD Vega 20'
+
+            driver_label = f'{driver_name} {os.uname().release}'
+
             fan_pwm = 0
             fan_pwm_pct = 0
             for pwmf in glob.glob(os.path.join(hw, 'pwm*')):
@@ -158,7 +163,7 @@ if not gpus:
                 'pciSlot': pci_slot,
                 'vendor': vendor,
                 'name': card_name,
-                'driver': driver_name,
+                'driver': driver_label,
                 'vramTotal': vram_total,
                 'vramUsed': vram_used,
                 'vramTotalBytes': vram_total_bytes,

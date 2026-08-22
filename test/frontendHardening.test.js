@@ -134,10 +134,17 @@ test('Internationalization: English defaults and language switching preserve nes
   assert.match(i18n, /observer\.disconnect\(\)/);
   assert.match(i18n, /queueMicrotask/);
   assert.match(dashboard, /dashboardText/);
+  assert.match(dashboard, /formatDashboardUptime/);
+  assert.match(dashboard, /data\.os\?\.uptimeSeconds/);
   assert.match(dashboard, /diskDevicesBody\.replaceChildren/);
   assert.match(llm, /llmText/);
   assert.match(llm, /addEventListener\('languagechange'/);
   assert.match(shellHtml, /id="disk-devices-body"/);
+  assert.match(shellHtml, /data-i18n="fan\.service_status"/);
+  assert.match(shellHtml, /data-i18n="fan\.sample_rate"/);
+  assert.match(shellHtml, /data-i18n="fan\.matrix_title"/);
+  assert.match(shellHtml, /data-i18n="fan\.presets_title"/);
+  assert.match(i18n, /'fan\.presets_title': '⚡ Cooling Presets'/);
   assert.doesNotMatch(i18n, /innerText\s*=\s*trans/);
   assert.match(catalog, /Linux Server Manager/);
   assert.match(englishReadme, /\[简体中文\]\(README\.zh-CN\.md\)/);

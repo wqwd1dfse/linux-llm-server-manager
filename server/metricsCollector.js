@@ -40,6 +40,29 @@ function cleanGpuDescription(description, fallback) {
   return cleaned || fallback;
 }
 
+function normalizeGpuName(description, fallback, vendor, memoryTotalBytes) {
+  const cleaned = cleanGpuDescription(description, fallback)
+    .replace(/\s+\(rev\s+[0-9a-f]+\)$/i, '')
+    .trim();
+
+  // PCI ID databases use one ambiguous label for several Vega 20 products and
+  // can even include "MI50 32GB" for a physically different 16 GB board.
+  // Prefer the hardware-reported VRAM capacity and avoid claiming a SKU that
+  // cannot be distinguished from PCI identity alone.
+  if (vendor === 'AMD' && /Vega\s*20/i.test(cleaned)) {
+    const vramGiB = memoryTotalBytes > 0 ? Math.round(memoryTotalBytes / 1024 / 1024 / 1024) : 0;
+    return `AMD Vega 20${vramGiB > 0 ? ` (${vramGiB} GB VRAM)` : ''}`;
+  }
+
+  if (vendor === 'AMD') {
+    return cleaned
+      .replace(/^Advanced Micro Devices, Inc\.\s*(?:\[AMD\/ATI\])?\s*/i, 'AMD ')
+      .replace(/^\[AMD\/ATI\]\s*/i, 'AMD ')
+      .trim();
+  }
+  return cleaned;
+}
+
 export function parseBlockDevices(lines = []) {
   const blockLines = Array.isArray(lines) ? lines : [];
   const jsonStart = blockLines.findIndex((line) => line.trim().startsWith('{'));
@@ -142,7 +165,7 @@ export function parseGpuDevices(lines = []) {
     devices.push({
       index: cardName.replace(/^card/, '') || devices.length,
       pciSlot,
-      name: cleanGpuDescription(description, fallbackName),
+      name: normalizeGpuName(description, fallbackName, vendor, memoryTotalBytes),
       driverVersion: driver ? driver + ' (Linux DRM)' : 'Linux DRM',
       temperature: tempValue !== null && tempValue > 1000 ? Math.round(tempValue / 100) / 10 : tempValue,
       utilizationGpu: nullableNumber(busy),
@@ -324,7 +347,7 @@ class MetricsCollector {
   updateLatestHistory(values = {}) {
     const latest = this.history.at(-1);
     if (!latest || Date.now() - latest.t > 10_000) return;
-    for (const key of ['fanRpm', 'cpuPwm']) {
+    for (const key of ['cpu', 'gpuJ', 'gpuE', 'gpuP', 'fanRpm', 'cpuPwm']) {
       const value = values[key];
       if (Number.isFinite(value)) latest[key] = value;
     }
@@ -416,11 +439,18 @@ class MetricsCollector {
           device_id=$(cat "$card/device/device" 2>/dev/null || echo '')
           driver_path=$(readlink -f "$card/device/driver" 2>/dev/null || true)
           driver="\${driver_path##*/}"
+          kernel_release=$(uname -r 2>/dev/null || true)
+          if [ -n "$driver" ] && [ -n "$kernel_release" ]; then
+            driver="$driver $kernel_release"
+          fi
           busy=$(cat "$card/device/gpu_busy_percent" 2>/dev/null || echo '')
           vram_used=$(cat "$card/device/mem_info_vram_used" 2>/dev/null || echo '')
           vram_total=$(cat "$card/device/mem_info_vram_total" 2>/dev/null || echo '')
           temp=$(cat "$card/device"/hwmon/hwmon*/temp1_input 2>/dev/null | head -n 1 || true)
           power=$(cat "$card/device"/hwmon/hwmon*/power1_average 2>/dev/null | head -n 1 || true)
+          if [ -z "$power" ]; then
+            power=$(cat "$card/device"/hwmon/hwmon*/power1_input 2>/dev/null | head -n 1 || true)
+          fi
           description=""
           if command -v lspci >/dev/null 2>&1; then
             description=$(lspci -s "$slot" 2>/dev/null | sed -E 's/^[^ ]+[[:space:]]+//' | tr '|\n' '  ' | xargs || true)
@@ -460,9 +490,11 @@ class MetricsCollector {
       const gpuPower = Number.parseFloat(primaryGpu?.powerDraw);
       this.history.push({
         t: now,
-        cpu: parsed.cpu?.usagePercent !== undefined ? parsed.cpu.usagePercent : null,
-        gpuJ: primaryGpu?.temperature !== undefined ? primaryGpu.temperature : null,
-        gpuE: primaryGpu?.tempEdge !== undefined ? primaryGpu.tempEdge : null,
+        // CPU usage is not a temperature. The fan status sampler enriches this
+        // point with the actual package/junction/edge sensors when available.
+        cpu: null,
+        gpuJ: null,
+        gpuE: primaryGpu?.temperature ?? null,
         gpuP: Number.isFinite(gpuPower) ? gpuPower : null,
         fanRpm: null, // Populated by fan status if queried
         cpuPwm: null

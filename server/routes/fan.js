@@ -66,7 +66,11 @@ if [ -n "$GPU_HWMON" ]; then
   echo "GPU_MEM:$(cat $GPU_HWMON/temp3_input 2>/dev/null || echo '')"
   echo "GPU_PWM:$(cat $GPU_HWMON/pwm1 2>/dev/null || echo '')"
   echo "GPU_RPM:$(cat $GPU_HWMON/fan1_input 2>/dev/null || echo '')"
-  echo "GPU_POWER:$(cat $GPU_HWMON/power1_average 2>/dev/null || echo '')"
+  gpu_power=$(cat "$GPU_HWMON"/power1_average 2>/dev/null || true)
+  if [ -z "$gpu_power" ]; then
+    gpu_power=$(cat "$GPU_HWMON"/power1_input 2>/dev/null || true)
+  fi
+  echo "GPU_POWER:$gpu_power"
 fi
 
 echo "---NCT_FANS---"
@@ -183,7 +187,7 @@ router.get('/status', async (req, res) => {
     const gpuRawPwm = parseIntOrNull(gpuMap['GPU_PWM']);
     const gpuPwmPercent = gpuRawPwm !== null ? Math.round((gpuRawPwm / 255) * 100) : null;
     const gpuRpm = parseIntOrNull(gpuMap['GPU_RPM']);
-    const gpuPowerW = gpuMap['GPU_POWER'] ? (parseInt(gpuMap['GPU_POWER'], 10) / 1000000).toFixed(1) : null;
+    const gpuPowerW = gpuMap['GPU_POWER'] ? Math.round((parseInt(gpuMap['GPU_POWER'], 10) / 1000000) * 10) / 10 : null;
 
     const fanRawPwm = parseIntOrNull(nctMap['FAN_PWM']);
     const fanPwmPercent = fanRawPwm !== null ? Math.round((fanRawPwm / 255) * 100) : null;
@@ -289,10 +293,10 @@ router.get('/status', async (req, res) => {
         gpu: {
           name: primaryGpu.name || 'GPU 加速卡',
           vendor: primaryGpu.vendor || 'AMD',
-          junction: primaryGpu.tempJunction !== undefined ? primaryGpu.tempJunction : gpuJunction,
-          mem: primaryGpu.tempMem !== undefined ? primaryGpu.tempMem : gpuMem,
-          edge: primaryGpu.tempEdge !== undefined ? primaryGpu.tempEdge : gpuEdge,
-          powerW: primaryGpu.powerW !== undefined ? primaryGpu.powerW : (gpuPowerW || null),
+          junction: primaryGpu.tempJunction ?? gpuJunction,
+          mem: primaryGpu.tempMem ?? gpuMem,
+          edge: primaryGpu.tempEdge ?? gpuEdge,
+          powerW: primaryGpu.powerW ?? gpuPowerW,
           vramTotal: primaryGpu.vramTotal || null,
           vramUsed: primaryGpu.vramUsed || null
         },
@@ -308,6 +312,10 @@ router.get('/status', async (req, res) => {
     const representativeFanRpm = [fanRpm, cpuFanRpm, gpuRpm, auxFanRpm]
       .find(Number.isFinite);
     metricsCollector.updateLatestHistory({
+      cpu: statusData.temperatures.cpu.package,
+      gpuJ: statusData.temperatures.gpu.junction,
+      gpuE: statusData.temperatures.gpu.edge,
+      gpuP: statusData.temperatures.gpu.powerW,
       fanRpm: representativeFanRpm,
       cpuPwm: cpuFanPwmPercent
     });

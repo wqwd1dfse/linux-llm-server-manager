@@ -153,14 +153,24 @@ test('Metrics history retains accurate full-range stats while sampling endpoints
     cpuPwm: null
   }));
 
-  metricsCollector.updateLatestHistory({ fanRpm: 1500, cpuPwm: 42 });
+  metricsCollector.updateLatestHistory({
+    cpu: 37,
+    gpuJ: 39,
+    gpuE: 37,
+    gpuP: 17,
+    fanRpm: 1500,
+    cpuPwm: 42
+  });
   const history = metricsCollector.getHistory('invalid-range');
   assert.equal(history.range, '5m');
   assert.equal(history.count, 120);
   assert.equal(history.points[0].cpu, 0);
-  assert.equal(history.points.at(-1).cpu, 239);
-  assert.equal(history.stats.cpu.avg, 119.5);
-  assert.equal(history.stats.cpu.current, 239);
+  assert.equal(history.points.at(-1).cpu, 37);
+  assert.equal(history.stats.cpu.avg, 118.7);
+  assert.equal(history.stats.cpu.current, 37);
+  assert.equal(history.stats.gpuJunction.current, 39);
+  assert.equal(history.stats.gpuEdge.current, 37);
+  assert.equal(history.stats.gpuPower.current, 17);
   assert.equal(history.stats.fanRpm.current, 1500);
 });
 
