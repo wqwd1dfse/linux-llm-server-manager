@@ -133,38 +133,57 @@ server.on('upgrade', (request, socket, head) => {
 // 9. Network Binding Defaults (127.0.0.1 default for local safety)
 const HOST = process.env.HOST || getConfig().serverHost || '127.0.0.1';
 let PORT = getConfig().serverPort || 3888;
+let runtimeInitialized = false;
 
-function startServer(portToUse) {
-  server.listen(portToUse, HOST, () => {
-    console.log(`\n======================================================`);
-    console.log(`🚀 Linux / LLM Server Management Dashboard`);
-    console.log(`🌐 Local URL: http://${HOST}:${portToUse}`);
-    console.log(`🔒 Bound Address: ${HOST} (Safe local default)`);
-    console.log(`🔑 Auth: Session Authentication Enabled`);
-    console.log(`======================================================\n`);
+function initializeRuntime(portToUse) {
+  if (runtimeInitialized) return;
+  runtimeInitialized = true;
 
-    metricsCollector.start();
+  console.log(`\n======================================================`);
+  console.log(`🚀 Linux / LLM Server Management Dashboard`);
+  console.log(`🌐 Local URL: http://${HOST}:${portToUse}`);
+  console.log(`🔒 Bound Address: ${HOST} (Safe local default)`);
+  console.log(`🔑 Auth: Session Authentication Enabled`);
+  console.log(`======================================================\n`);
 
-    const cfg = getConfig();
-    const autoConnectEnabled = process.env.AUTO_CONNECT !== 'false';
-    if (autoConnectEnabled && (cfg.password || cfg.privateKey) && !getConnectionStatus().manuallyDisconnected) {
-      console.log(`[SSH] Attempting initial connection to ${cfg.username}@${cfg.host}:${cfg.port}...`);
-      getClient()
-        .then(() => console.log(`[SSH] ✅ Connection established with ${cfg.host}`))
-        .catch((err) => console.log(`[SSH] ⚠️ Initial connection not ready: ${err.message}`));
-    }
-  });
+  metricsCollector.start();
+
+  const cfg = getConfig();
+  const autoConnectEnabled = process.env.AUTO_CONNECT !== 'false';
+  if (autoConnectEnabled && (cfg.password || cfg.privateKey) && !getConnectionStatus().manuallyDisconnected) {
+    console.log(`[SSH] Attempting initial connection to ${cfg.username}@${cfg.host}:${cfg.port}...`);
+    getClient()
+      .then(() => console.log(`[SSH] ✅ Connection established with ${cfg.host}`))
+      .catch((err) => console.log(`[SSH] ⚠️ Initial connection not ready: ${err.message}`));
+  }
 }
 
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.warn(`[HTTP] Port ${PORT} is in use, trying port ${PORT + 1}...`);
-    PORT += 1;
-    startServer(PORT);
-  } else {
-    console.error('[HTTP] Server error:', err);
-  }
-});
+function startServer(portToUse = PORT) {
+  PORT = portToUse;
+
+  const handleListening = () => {
+    server.off('error', handleError);
+    const address = server.address();
+    const listeningPort = typeof address === 'object' && address ? address.port : PORT;
+    PORT = listeningPort;
+    initializeRuntime(listeningPort);
+  };
+
+  const handleError = (err) => {
+    server.off('listening', handleListening);
+    if (err.code === 'EADDRINUSE') {
+      const nextPort = PORT + 1;
+      console.warn(`[HTTP] Port ${PORT} is in use, trying port ${nextPort}...`);
+      startServer(nextPort);
+    } else {
+      console.error('[HTTP] Server error:', err);
+    }
+  };
+
+  server.once('listening', handleListening);
+  server.once('error', handleError);
+  server.listen(PORT, HOST);
+}
 
 const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === __filename;
 if (isDirectRun) {
